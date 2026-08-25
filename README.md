@@ -155,3 +155,4 @@ open CanvaNative.app
 ./scripts/build_app.sh
 cp -R CanvaNative.app /Applications/
 ```
+# Pluma
