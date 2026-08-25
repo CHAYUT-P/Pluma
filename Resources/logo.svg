@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
+  <defs>
+    <!-- Background Canvas Gradient -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#FCFAF5" />
+      <stop offset="100%" stop-color="#F2EAE0" />
+    </linearGradient>
+
+    <!-- Squircle Shadow -->
+    <filter id="dropShadow" x="-10%" y="-10%" width="130%" height="130%">
+      <feDropShadow dx="0" dy="8" stdDeviation="16" flood-color="#000000" flood-opacity="0.18" />
+    </filter>
+
+    <!-- Body Shadow -->
+    <filter id="bodyShadow" x="-10%" y="-10%" width="130%" height="130%">
+      <feDropShadow dx="0" dy="6" stdDeviation="12" flood-color="#7C2D12" flood-opacity="0.3" />
+    </filter>
+  </defs>
+
+  <!-- 1. Modern macOS Squircle Container -->
+  <rect x="40" y="40" width="432" height="432" rx="96" ry="96" fill="url(#bgGrad)" filter="url(#dropShadow)" stroke="#E7DDD2" stroke-width="2" />
+
+  <!-- 2. Clean Vector Owl Mascot Body -->
+  <!-- Ear Left -->
+  <polygon points="120,180 145,110 185,160" fill="#9A3412" />
+  <!-- Ear Right -->
+  <polygon points="327,160 367,110 392,180" fill="#9A3412" />
+
+  <!-- Main Body -->
+  <rect x="110" y="140" width="230" height="260" rx="100" ry="100" fill="#C2410C" filter="url(#bodyShadow)" />
+
+  <!-- White Face Mask / Belly -->
+  <rect x="135" y="180" width="180" height="160" rx="70" ry="70" fill="#FAF7F0" />
+
+  <!-- Big Dot Eyes -->
+  <circle cx="180" cy="235" r="16" fill="#1C1917" />
+  <circle cx="175" cy="230" r="5" fill="#FFFFFF" />
+
+  <circle cx="270" cy="235" r="16" fill="#1C1917" />
+  <circle cx="265" cy="230" r="5" fill="#FFFFFF" />
+
+  <!-- Blush Cheeks -->
+  <circle cx="155" cy="255" r="9" fill="#F87171" opacity="0.5" />
+  <circle cx="295" cy="255" r="9" fill="#F87171" opacity="0.5" />
+
+  <!-- Cute Golden Triangle Beak -->
+  <polygon points="212,248 238,248 225,272" fill="#F59E0B" />
+
+  <!-- 3. Clean Minimalist Paintbrush -->
+  <g transform="translate(325, 230) rotate(35)">
+    <!-- Wooden Handle -->
+    <rect x="-8" y="0" width="16" height="130" rx="7" ry="7" fill="#B45309" />
+    <!-- Metal Ferrule -->
+    <rect x="-11" y="-30" width="22" height="32" rx="4" ry="4" fill="#94A3B8" />
+    <!-- Cyan Bristles -->
+    <path d="M -13 -30 C -18 -60, -10 -90, 0 -95 C 10 -90, 18 -60, 13 -30 Z" fill="#06B6D4" />
+    <!-- Magenta Paint Splash Tip -->
+    <path d="M -7 -55 C -10 -75, -5 -90, 0 -95 C 5 -90, 8 -75, 4 -60 Z" fill="#EC4899" />
+  </g>
+</svg>

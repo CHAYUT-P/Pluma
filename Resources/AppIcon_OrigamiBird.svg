@@ -1,0 +1,103 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <!-- Background: Warm Artisan Silk Squircle -->
+    <linearGradient id="bgSilk" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#FCFAF6"/>
+      <stop offset="50%" stop-color="#F5EFE6"/>
+      <stop offset="100%" stop-color="#EBE2D3"/>
+    </linearGradient>
+
+    <!-- Warm Terracotta Main Facet -->
+    <linearGradient id="terraMain" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FB923C"/>
+      <stop offset="40%" stop-color="#EA580C"/>
+      <stop offset="100%" stop-color="#9A3412"/>
+    </linearGradient>
+
+    <!-- Terracotta Dark Facet -->
+    <linearGradient id="terraShade" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#EA580C"/>
+      <stop offset="60%" stop-color="#C2410C"/>
+      <stop offset="100%" stop-color="#7C2D12"/>
+    </linearGradient>
+
+    <!-- Gold Brass Foil Facet -->
+    <linearGradient id="goldFoil" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FEF08A"/>
+      <stop offset="35%" stop-color="#FBBF24"/>
+      <stop offset="80%" stop-color="#D97706"/>
+      <stop offset="100%" stop-color="#92400E"/>
+    </linearGradient>
+
+    <!-- Deep Ink Slate Facet -->
+    <linearGradient id="inkSlate" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#334155"/>
+      <stop offset="100%" stop-color="#0F172A"/>
+    </linearGradient>
+
+    <!-- Crisp Parchment Facet -->
+    <linearGradient id="parchmentWhite" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="100%" stop-color="#EDE7DA"/>
+    </linearGradient>
+
+    <!-- App Icon macOS Drop Shadow -->
+    <filter id="macAppShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="24" stdDeviation="28" flood-color="#000000" flood-opacity="0.22"/>
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#000000" flood-opacity="0.14"/>
+    </filter>
+
+    <!-- Origami Bird 3D Elevation Shadow -->
+    <filter id="birdShadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="22" stdDeviation="24" flood-color="#C2410C" flood-opacity="0.30"/>
+      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#000000" flood-opacity="0.18"/>
+    </filter>
+  </defs>
+
+  <!-- 1. Apple macOS Standard Squircle Base -->
+  <g filter="url(#macAppShadow)">
+    <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bgSilk)"/>
+    <rect x="100" y="100" width="824" height="824" rx="185" fill="none" stroke="#FFFFFF" stroke-width="2" stroke-opacity="0.8"/>
+    <rect x="101" y="101" width="822" height="822" rx="184" fill="none" stroke="#000000" stroke-opacity="0.06" stroke-width="1.5"/>
+  </g>
+
+  <!-- 2. The Origami Swift / Hummingbird in Flight (Faceted Vector Precision) -->
+  <g filter="url(#birdShadow)" transform="translate(0, 10)">
+    
+    <!-- Facet 1: Beak / Head (Gold Triangle) -->
+    <polygon points="260,430 330,380 340,430" fill="url(#goldFoil)"/>
+
+    <!-- Facet 2: Head Fold (Terracotta) -->
+    <polygon points="330,380 400,380 340,430" fill="url(#terraMain)"/>
+
+    <!-- Facet 3: Neck / Chest (Dark Terracotta) -->
+    <polygon points="340,430 400,380 360,540" fill="url(#terraShade)"/>
+
+    <!-- Facet 4: Central Breast (Gold Foil Ribbon - Stem of T) -->
+    <polygon points="400,380 520,320 450,560 360,540" fill="url(#goldFoil)"/>
+
+    <!-- Facet 5: Lower Body / Belly (Terracotta Triangle) -->
+    <polygon points="360,540 450,560 520,620" fill="url(#terraMain)"/>
+
+    <!-- Facet 6: Wing Spine (Upper Terracotta Crest) -->
+    <polygon points="520,320 680,210 570,380" fill="url(#terraMain)"/>
+
+    <!-- Facet 7: Back Wing Tip (Dark Terracotta) -->
+    <polygon points="680,210 650,195 560,285" fill="url(#terraShade)"/>
+
+    <!-- Facet 8: Large Main Wing (Parchment White Facet) -->
+    <polygon points="520,320 570,380 770,230" fill="url(#parchmentWhite)"/>
+
+    <!-- Facet 9: Wing Fold Shadow (Terracotta Accent) -->
+    <polygon points="570,380 630,480 770,230" fill="url(#terraShade)"/>
+
+    <!-- Facet 10: Wing Lower Feather (Parchment) -->
+    <polygon points="570,380 500,480 630,480" fill="url(#parchmentWhite)"/>
+
+    <!-- Facet 11: Tail Upper Segment (Dark Terracotta) -->
+    <polygon points="450,560 520,620 530,730" fill="url(#terraShade)"/>
+
+    <!-- Facet 12: Tail Lower Quill (Parchment Feather Tip) -->
+    <polygon points="520,620 680,780 530,730" fill="url(#parchmentWhite)"/>
+  </g>
+</svg>

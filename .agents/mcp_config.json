@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "pluma": {
+      "command": "python3",
+      "args": ["/Users/chayut/project/canvas/scripts/pluma_mcp_server.py"],
+      "description": "Model Context Protocol tools for creating, inspecting, designing, and automating Pluma canvas documents."
+    }
+  }
+}
