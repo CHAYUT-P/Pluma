@@ -121,7 +121,7 @@ public struct CanvasViewportView: View {
                     }
                 }
                 .gesture(
-                    // Pan Gesture when in Hand mode or holding Spacebar
+                    // Pan Gesture when in Hand mode or holding Spacebar (clamped for presentation)
                     DragGesture(minimumDistance: 1)
                         .onChanged { value in
                             if isHandOrPanMode || NSEvent.modifierFlags.contains(.control) || NSEvent.modifierFlags.contains(.option) {
@@ -134,6 +134,7 @@ public struct CanvasViewportView: View {
                                     x: panStartOffset.x + value.translation.width,
                                     y: panStartOffset.y + value.translation.height
                                 )
+                                viewModel.clampPanOffset(for: geometry.size)
                             }
                         }
                         .onEnded { _ in
@@ -141,6 +142,7 @@ public struct CanvasViewportView: View {
                             if isHandOrPanMode {
                                 NSCursor.openHand.set()
                             }
+                            viewModel.clampPanOffset(for: geometry.size)
                         }
                 )
 
@@ -194,6 +196,17 @@ public struct CanvasViewportView: View {
                         .zIndex(50)
                 }
 
+                // 4c. Canva-Style Bottom Filmstrip (presentation / document pages)
+                if viewModel.pageLayoutMode != .infiniteWhiteboard && viewModel.project.pages.count > 1 {
+                    VStack {
+                        Spacer()
+                        bottomFilmstripView
+                            .padding(.horizontal, 80)
+                            .padding(.bottom, 16)
+                    }
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+
                 // 5. Floating Canva-Style Zoom Drag Slider Dock (Bottom Right)
                 VStack {
                     Spacer()
@@ -201,7 +214,7 @@ public struct CanvasViewportView: View {
                         Spacer()
                         floatingZoomSliderDock(viewportSize: geometry.size)
                             .padding(.trailing, 16)
-                            .padding(.bottom, 16)
+                            .padding(.bottom, viewModel.pageLayoutMode != .infiniteWhiteboard && viewModel.project.pages.count > 1 ? 110 : 16)
                     }
                 }
 
@@ -245,6 +258,13 @@ public struct CanvasViewportView: View {
                 if viewModel.zoomScale == 0.65 {
                     viewModel.zoomToFit(viewportSize: newSize)
                 }
+            }
+            .onChange(of: viewModel.zoomScale) { _, _ in
+                viewModel.clampPanOffset(for: geometry.size)
+            }
+            .onChange(of: viewModel.activePageIndex) { _, _ in
+                // Reset pan slightly when switching pages so filmstrip stays synced
+                viewModel.clampPanOffset(for: geometry.size)
             }
         }
     }
@@ -408,27 +428,32 @@ public struct CanvasViewportView: View {
                     .contextMenu {
                         elementContextMenu(for: element)
                     }
-                    .onTapGesture(count: 2) {
-                        if case .text = element.payload {
-                            viewModel.editingTextElementId = element.id
-                            viewModel.editingCodeElementId = nil
-                        } else if case .code = element.payload {
-                            viewModel.editingCodeElementId = element.id
-                            viewModel.editingTextElementId = nil
+                    // Instant select + delayed double-tap edit: use simultaneousGesture for single so transformer appears with zero delay
+                    .gesture(
+                        TapGesture(count: 2).onEnded {
+                            if case .text = element.payload {
+                                viewModel.editingTextElementId = element.id
+                                viewModel.editingCodeElementId = nil
+                            } else if case .code = element.payload {
+                                viewModel.editingCodeElementId = element.id
+                                viewModel.editingTextElementId = nil
+                            }
                         }
-                    }
-                    .onTapGesture(count: 1) {
-                        if viewModel.editingTextElementId != element.id {
-                            viewModel.editingTextElementId = nil
+                    )
+                    .simultaneousGesture(
+                        TapGesture(count: 1).onEnded {
+                            if viewModel.editingTextElementId != element.id {
+                                viewModel.editingTextElementId = nil
+                            }
+                            if viewModel.editingCodeElementId != element.id {
+                                viewModel.editingCodeElementId = nil
+                            }
+                            if viewModel.activeTool == .select {
+                                let isShiftPressed = NSEvent.modifierFlags.contains(.shift)
+                                viewModel.selectElement(element, multiSelect: isShiftPressed)
+                            }
                         }
-                        if viewModel.editingCodeElementId != element.id {
-                            viewModel.editingCodeElementId = nil
-                        }
-                        if viewModel.activeTool == .select {
-                            let isShiftPressed = NSEvent.modifierFlags.contains(.shift)
-                            viewModel.selectElement(element, multiSelect: isShiftPressed)
-                        }
-                    }
+                    )
                     .gesture(
                         DragGesture(minimumDistance: 3, coordinateSpace: .global)
                             .onChanged { value in
@@ -735,29 +760,34 @@ public struct CanvasViewportView: View {
                         .contextMenu {
                             elementContextMenu(for: element)
                         }
-                        .onTapGesture(count: 2) {
-                            viewModel.activePageIndex = pageIndex
-                            if case .text = element.payload {
-                                viewModel.editingTextElementId = element.id
-                                viewModel.editingCodeElementId = nil
-                            } else if case .code = element.payload {
-                                viewModel.editingCodeElementId = element.id
-                                viewModel.editingTextElementId = nil
+                        // Instant select + delayed double-tap edit (no 300ms transformer delay)
+                        .gesture(
+                            TapGesture(count: 2).onEnded {
+                                viewModel.activePageIndex = pageIndex
+                                if case .text = element.payload {
+                                    viewModel.editingTextElementId = element.id
+                                    viewModel.editingCodeElementId = nil
+                                } else if case .code = element.payload {
+                                    viewModel.editingCodeElementId = element.id
+                                    viewModel.editingTextElementId = nil
+                                }
                             }
-                        }
-                        .onTapGesture(count: 1) {
-                            viewModel.activePageIndex = pageIndex
-                            if viewModel.editingTextElementId != element.id {
-                                viewModel.editingTextElementId = nil
+                        )
+                        .simultaneousGesture(
+                            TapGesture(count: 1).onEnded {
+                                viewModel.activePageIndex = pageIndex
+                                if viewModel.editingTextElementId != element.id {
+                                    viewModel.editingTextElementId = nil
+                                }
+                                if viewModel.editingCodeElementId != element.id {
+                                    viewModel.editingCodeElementId = nil
+                                }
+                                if viewModel.activeTool == .select {
+                                    let isShiftPressed = NSEvent.modifierFlags.contains(.shift)
+                                    viewModel.selectElement(element, multiSelect: isShiftPressed)
+                                }
                             }
-                            if viewModel.editingCodeElementId != element.id {
-                                viewModel.editingCodeElementId = nil
-                            }
-                            if viewModel.activeTool == .select {
-                                let isShiftPressed = NSEvent.modifierFlags.contains(.shift)
-                                viewModel.selectElement(element, multiSelect: isShiftPressed)
-                            }
-                        }
+                        )
                         .gesture(
                             DragGesture(minimumDistance: 3, coordinateSpace: .global)
                                 .onChanged { value in
@@ -1027,6 +1057,61 @@ public struct CanvasViewportView: View {
         .background(.ultraThinMaterial)
         .clipShape(RoundedRectangle(cornerRadius: 20))
         .overlay(RoundedRectangle(cornerRadius: 20).stroke(Color.secondary.opacity(0.2), lineWidth: 1))
+        .shadow(color: Color.black.opacity(0.12), radius: 10, x: 0, y: 4)
+    }
+
+    // MARK: - Canva-Style Bottom Filmstrip (Page Thumbnails)
+
+    private var bottomFilmstripView: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 10) {
+                ForEach(Array(viewModel.project.pages.enumerated()), id: \.element.id) { idx, page in
+                    let isActive = viewModel.activePageIndex == idx
+                    ZStack(alignment: .bottomLeading) {
+                        Group {
+                            if let thumb = PageThumbnailService.shared.thumbnail(for: page, targetWidth: 140) {
+                                Image(nsImage: thumb)
+                                    .resizable()
+                                    .aspectRatio(contentMode: .fit)
+                                    .frame(width: 110, height: 62)
+                            } else {
+                                Rectangle()
+                                    .fill(Color.secondary.opacity(0.08))
+                                    .frame(width: 110, height: 62)
+                            }
+                        }
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6)
+                                .stroke(isActive ? Color(hex: "#C2410C") : Color.black.opacity(0.12), lineWidth: isActive ? 2 : 1)
+                        )
+                        .shadow(color: isActive ? Color(hex: "#C2410C").opacity(0.25) : .clear, radius: 4, x: 0, y: 2)
+
+                        // Page number badge (Canva style)
+                        Text("\(idx + 1)")
+                            .font(.system(size: 10, weight: .bold, design: .monospaced))
+                            .foregroundColor(.white)
+                            .frame(width: 18, height: 18)
+                            .background(isActive ? Color(hex: "#C2410C") : Color.black.opacity(0.55))
+                            .clipShape(Circle())
+                            .padding(5)
+                    }
+                    .onTapGesture {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            viewModel.activePageIndex = idx
+                            viewModel.selectedElementIds.removeAll()
+                        }
+                    }
+                    .help("Go to Page \(idx + 1)")
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+        }
+        .frame(height: 86)
+        .background(.ultraThinMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.secondary.opacity(0.2), lineWidth: 1))
         .shadow(color: Color.black.opacity(0.12), radius: 10, x: 0, y: 4)
     }
 
@@ -1565,7 +1650,7 @@ public final class TrackpadGestureHostView: NSView {
                                 viewportSize: CGSize(width: self.bounds.width, height: self.bounds.height)
                             )
                         } else {
-                            // Smooth pan in X and Y
+                            // Smooth pan in X and Y (clamped for presentation mode)
                             let dx = event.scrollingDeltaX
                             let dy = event.scrollingDeltaY
                             let hasPrecise = event.hasPreciseScrollingDeltas
@@ -1573,6 +1658,10 @@ public final class TrackpadGestureHostView: NSView {
 
                             vm.panOffset.x += dx * multiplier
                             vm.panOffset.y += dy * multiplier
+                            // Clamp immediately so Canva-like locked centering holds
+                            DispatchQueue.main.async {
+                                vm.clampPanOffset(for: CGSize(width: self.bounds.width, height: self.bounds.height))
+                            }
                         }
                     }
                 }

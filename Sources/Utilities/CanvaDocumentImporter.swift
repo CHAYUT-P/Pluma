@@ -434,9 +434,12 @@ public enum CanvaDocumentImporter {
         let tIns = emu(bodyPr?.attribute(forName: "tIns")?.stringValue, default: 45720) / emuPerPx
         let bIns = emu(bodyPr?.attribute(forName: "bIns")?.stringValue, default: 45720) / emuPerPx
         var autofitScale: Double = 1.0
+        var isSpAutoFit = false
         if let fontScale = bodyPr?.elements(forName: "a:normAutofit").first?.attribute(forName: "fontScale")?.stringValue,
            let v = Double(fontScale), v > 0 {
             autofitScale = v / 100000.0
+        } else if bodyPr?.elements(forName: "a:spAutoFit").first != nil {
+            isSpAutoFit = true
         }
         let anchor = bodyPr?.attribute(forName: "anchor")?.stringValue ?? "t"
 
@@ -635,6 +638,7 @@ public enum CanvaDocumentImporter {
                 x: x, y: y, w: w, h: h, rotation: rotation,
                 lIns: lIns, rIns: rIns, tIns: tIns, bIns: bIns,
                 autofitScale: autofitScale, anchor: anchor,
+                isSpAutoFit: isSpAutoFit,
                 phType: phType, inheritedSizePt: inheritedSizePt,
                 majorFont: theme.majorFont, minorFont: theme.minorFont,
                 styleDefaultColor: styleTextColor,
@@ -668,6 +672,7 @@ public enum CanvaDocumentImporter {
         lIns: Double, rIns: Double, tIns: Double, bIns: Double,
         autofitScale: Double,
         anchor: String,
+        isSpAutoFit: Bool = false,
         phType: String?,
         inheritedSizePt: Double?,
         majorFont: String, minorFont: String,
@@ -819,6 +824,7 @@ public enum CanvaDocumentImporter {
             var color: CodableColor
             var align: TextAlignmentKind
             var lineSpacing: Double
+            var letterSpacing: Double = 0
             var measuredHeight: Double = 0
         }
 
@@ -837,6 +843,8 @@ public enum CanvaDocumentImporter {
             var fontSizePt = fmt.sizePt ?? ownListStylePt ?? inheritedSizePt ?? (isTitle ? 44.0 : 18.0)
             fontSizePt *= autofitScale
             let fontSizePx = max(8, fontSizePt * ptToPx)
+            // Letter spacing from OOXML spc (1/100 pt) → px; negative = condensed
+            let letterSpacing = (fmt.letterSpacingPt ?? 0) * ptToPx
             // SwiftUI lineSpacing = EXTRA space beyond natural single spacing.
             // spcPts gives the exact total line height; spcPct (encoded negative) is a multiplier.
             var lineSpacing: Double = 0
@@ -856,7 +864,8 @@ public enum CanvaDocumentImporter {
                 underline: fmt.underline,
                 color: resolvedColorFor(fmt),
                 align: para.align,
-                lineSpacing: lineSpacing
+                lineSpacing: lineSpacing,
+                letterSpacing: letterSpacing
             )
         }
 
@@ -883,6 +892,47 @@ public enum CanvaDocumentImporter {
         let tw = max(24, w - lIns - rIns)
         let th = max(18, h - tIns - bIns)
 
+        // --- spAutoFit: shrink to fit if the text overflows the box (PowerPoint Canva behavior) ---
+        if isSpAutoFit {
+            var maxSingleLineWidth: Double = 0
+            var currentTotalH: Double = 0
+            for r in resolvedParas {
+                let h = measureTextBlockHeight(
+                    text: r.text.isEmpty ? " " : r.text,
+                    fontFamily: r.fontFamily,
+                    fontSizePx: r.fontSizePx,
+                    fontWeight: r.fontWeight,
+                    italic: r.italic,
+                    lineSpacing: r.lineSpacing,
+                    letterSpacing: r.letterSpacing,
+                    width: tw,
+                    alignment: r.align
+                )
+                currentTotalH += h
+                let lw = measureSingleLineWidth(
+                    text: r.text.isEmpty ? " " : r.text,
+                    fontFamily: r.fontFamily,
+                    fontSizePx: r.fontSizePx,
+                    fontWeight: r.fontWeight,
+                    italic: r.italic,
+                    letterSpacing: r.letterSpacing
+                )
+                maxSingleLineWidth = max(maxSingleLineWidth, lw)
+            }
+            let scaleY = currentTotalH > th ? (th / currentTotalH) : 1.0
+            let scaleX = maxSingleLineWidth > tw ? (tw / maxSingleLineWidth) : 1.0
+            let shrink = min(scaleX, scaleY)
+            if shrink < 0.98 {
+                // Clamp to avoid microscopic text (PowerPoint's minimum ~ 40% of original)
+                let clamped = max(0.4, shrink)
+                for i in resolvedParas.indices {
+                    resolvedParas[i].fontSizePx *= clamped
+                    resolvedParas[i].letterSpacing *= clamped
+                    resolvedParas[i].lineSpacing *= clamped
+                }
+            }
+        }
+
         // Measure every paragraph with TextKit so wrapped lines are counted correctly
         // (the previous single-line estimate caused overlapping text on wrapped paragraphs).
         for i in resolvedParas.indices {
@@ -894,6 +944,7 @@ public enum CanvaDocumentImporter {
                 fontWeight: r.fontWeight,
                 italic: r.italic,
                 lineSpacing: r.lineSpacing,
+                letterSpacing: r.letterSpacing,
                 width: tw,
                 alignment: r.align
             )
@@ -912,7 +963,7 @@ public enum CanvaDocumentImporter {
         func sameFormat(_ a: ResolvedPara, _ b: ResolvedPara) -> Bool {
             abs(a.fontSizePx - b.fontSizePx) < 0.5 && a.fontFamily == b.fontFamily &&
             a.fontWeight == b.fontWeight && a.italic == b.italic && a.underline == b.underline &&
-            a.color == b.color && a.align == b.align && abs(a.lineSpacing - b.lineSpacing) < 0.5
+            a.color == b.color && a.align == b.align && abs(a.lineSpacing - b.lineSpacing) < 0.5 && abs(a.letterSpacing - b.letterSpacing) < 0.1
         }
         for r in resolvedParas {
             if var last = blocks.last, let lp = last.para, sameFormat(lp, r) {
@@ -955,7 +1006,7 @@ public enum CanvaDocumentImporter {
                     isUnderlined: p.underline,
                     alignment: p.align,
                     textColor: p.color,
-                    letterSpacing: 0,
+                    letterSpacing: p.letterSpacing,
                     lineSpacing: p.lineSpacing
                 )),
                 x: tx, y: cursorY,
@@ -968,6 +1019,35 @@ public enum CanvaDocumentImporter {
         return results
     }
 
+    /// Measures single-line width for spAutoFit calculations.
+    static func measureSingleLineWidth(
+        text: String,
+        fontFamily: String,
+        fontSizePx: Double,
+        fontWeight: Double,
+        italic: Bool,
+        letterSpacing: Double
+    ) -> Double {
+        let weight: NSFont.Weight
+        switch fontWeight {
+        case ..<250: weight = .ultraLight
+        case ..<350: weight = .light
+        case ..<450: weight = .regular
+        case ..<550: weight = .medium
+        case ..<650: weight = .semibold
+        case ..<750: weight = .bold
+        case ..<850: weight = .heavy
+        default: weight = .black
+        }
+        var base: NSFont? = NSFont(name: fontFamily, size: fontSizePx)
+        if base == nil { base = NSFont.systemFont(ofSize: fontSizePx, weight: weight) }
+        else if fontWeight >= 600 { base = NSFontManager().convert(base!, toHaveTrait: .boldFontMask) }
+        var font = base!
+        if italic { font = NSFontManager().convert(font, toHaveTrait: .italicFontMask) }
+        let attrs: [NSAttributedString.Key: Any] = [.font: font, .kern: CGFloat(letterSpacing)]
+        return Double((text as NSString).size(withAttributes: attrs).width)
+    }
+
     /// Measures the rendered height of a (possibly multi-line, wrapping) text block using
     /// TextKit with the same font/spacing the canvas renderer uses. Returns points.
     static func measureTextBlockHeight(
@@ -977,6 +1057,7 @@ public enum CanvaDocumentImporter {
         fontWeight: Double,
         italic: Bool,
         lineSpacing: Double,
+        letterSpacing: Double = 0,
         width: Double,
         alignment: TextAlignmentKind
     ) -> Double {
@@ -1016,7 +1097,8 @@ public enum CanvaDocumentImporter {
 
         let storage = NSTextStorage(string: text, attributes: [
             .font: font,
-            .paragraphStyle: para
+            .paragraphStyle: para,
+            .kern: CGFloat(letterSpacing)
         ])
         let manager = NSLayoutManager()
         storage.addLayoutManager(manager)
@@ -1064,6 +1146,7 @@ public enum CanvaDocumentImporter {
         var italic = false
         var underline = false
         var color: ResolvedColor? = nil
+        var letterSpacingPt: Double? = nil // spc attribute: 1/100 pt (e.g. -3671 = -36.71pt condensed)
         var textLen = 0
     }
 
@@ -1080,6 +1163,9 @@ public enum CanvaDocumentImporter {
         f.bold = rPr.attribute(forName: "b")?.stringValue == "1"
         f.italic = rPr.attribute(forName: "i")?.stringValue == "1"
         f.underline = rPr.attribute(forName: "u")?.stringValue == "sng"
+        if let spcStr = rPr.attribute(forName: "spc")?.stringValue, let spc = Double(spcStr) {
+            f.letterSpacingPt = spc / 100.0
+        }
         if let solid = rPr.elements(forName: "a:solidFill").first {
             f.color = resolveColor(solid, theme: theme)
         }
@@ -1371,6 +1457,7 @@ public enum CanvaDocumentImporter {
                 imageBase64: base64,
                 contentMode: .fill,
                 cornerRadius: 0,
+                stroke: StrokeStyle(isEnabled: false),
                 originalWidth: Double(image.size.width),
                 originalHeight: Double(image.size.height)
             )),
@@ -2598,7 +2685,11 @@ public enum CanvaDocumentImporter {
             "MS Gothic": "Hiragino Sans",
             "Meiryo": "Hiragino Sans",
             "Microsoft YaHei": "PingFang SC",
-            "SimSun": "Songti SC"
+            "SimSun": "Songti SC",
+            "Sprite Graffiti": "Marker Felt",
+            "Helvetica World": "Helvetica Neue",
+            "Helvetica World Bold": "Helvetica Neue",
+            "Arial Unicode Bold": "Arial Unicode MS"
         ]
         if let mapped = known[name] { return mapped }
         // If macOS actually has the font, keep it (Arial, Georgia, Verdana, etc.)
