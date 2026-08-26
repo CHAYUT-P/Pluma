@@ -77,13 +77,22 @@ public final class CanvasDocumentViewModel: ObservableObject {
         }
 
         let firstPage = self.project.pages[0]
-        if (firstPage.width >= 2400 && firstPage.height >= 1800) || self.project.name.contains("Whiteboard") || self.project.name.contains("Mindmap") || self.project.name.contains("Flowchart") || self.project.name.contains("Sticky") {
-            self.pageLayoutMode = .infiniteWhiteboard
-            self.zoomScale = 0.5
+        _ = firstPage
+        syncLayoutMode()
+        if pageLayoutMode == .infiniteWhiteboard { zoomScale = 0.5 }
+    }
+
+    /// Recomputes layout mode from the current first page.
+    /// Called after template/preset swaps so an A4 template applied onto a
+    /// presentation project actually becomes a continuous document (and vice versa).
+    public func syncLayoutMode() {
+        let firstPage = project.pages.first ?? CanvasPage(background: .solid(.white))
+        if (firstPage.width >= 2400 && firstPage.height >= 1800) || project.name.contains("Whiteboard") || project.name.contains("Mindmap") || project.name.contains("Flowchart") || project.name.contains("Sticky") {
+            pageLayoutMode = .infiniteWhiteboard
         } else if firstPage.width == 1240 && firstPage.height == 1754 {
-            self.pageLayoutMode = .continuousVertical
+            pageLayoutMode = .continuousVertical
         } else {
-            self.pageLayoutMode = .singleSlide
+            pageLayoutMode = .singleSlide
         }
     }
 
@@ -1279,6 +1288,7 @@ public final class CanvasDocumentViewModel: ObservableObject {
         saveHistoryState()
         currentPage.width = preset.width
         currentPage.height = preset.height
+        syncLayoutMode()
         panOffset = .zero
         showTemporaryToast("Resized to \(preset.name)")
     }
@@ -1294,6 +1304,7 @@ public final class CanvasDocumentViewModel: ObservableObject {
             page.id = currentPage.id
             currentPage = page
         }
+        syncLayoutMode()
         selectedElementIds.removeAll()
         editingTextElementId = nil
         panOffset = .zero
@@ -1514,60 +1525,84 @@ public final class CanvasDocumentViewModel: ObservableObject {
         clampPanOffset(for: size)
     }
 
-    // MARK: - Pan Clamping (Canva-style locked page when zoomed-out)
+    // MARK: - Pan Discipline (Canva-style locked pages)
+
+    /// Vertical space reserved for the bottom filmstrip rail (set by CanvasViewportView).
+    /// Fit & clamping math keeps the page floating ABOVE the rail instead of under it.
+    public var bottomInset: CGFloat = 0
+
+    /// Viewport minus the bottom rail reserve — the area the page actually lives in.
+    private func effectiveViewportSize(_ size: CGSize) -> CGSize {
+        CGSize(width: size.width, height: max(60, size.height - bottomInset))
+    }
+
+    /// Zoom of the last programmatic fit — while zoomScale equals this, the user hasn't
+    /// zoomed manually, so window resizes re-fit (launch-small-then-grow self-heals).
+    public var lastFitZoom: Double? = nil
 
     /// Fit scale for the current page (same math as zoomToFit without applying it).
     public func fitScale(for viewportSize: CGSize) -> Double {
         guard viewportSize.width > 50 && viewportSize.height > 50 else { return zoomScale }
         if pageLayoutMode == .infiniteWhiteboard { return zoomScale } // infinite board is free
-        let hPadding: CGFloat = 80
-        let vPadding: CGFloat = 110
-        let availableW = max(50, viewportSize.width - hPadding)
-        let availableH = max(50, viewportSize.height - vPadding)
+        let eff = effectiveViewportSize(viewportSize)
+        let availableW = max(50, eff.width - 80)
+        let availableH = max(50, eff.height - 110)
         let wRatio = availableW / currentPage.width
         let hRatio = availableH / currentPage.height
         return max(0.15, min(1.5, min(wRatio, hRatio)))
     }
 
-    /// Clamps panOffset so the page stays locked-centered when zoomed-out, and only panning is allowed when zoomed-in.
-    /// For singleSlide (presentation): hard lock to .zero when at or below fit. For continuousVertical: only horizontal is locked.
+    /// Whether hand/scroll panning may move the page right now.
+    /// Presentations are LOCKED at fit zoom — zoom in first to pan.
+    /// Documents allow vertical scroll (that IS page navigation) but lock horizontal.
+    public func canPan(viewportSize: CGSize) -> Bool {
+        switch pageLayoutMode {
+        case .infiniteWhiteboard:
+            return true
+        case .continuousVertical:
+            return true
+        case .singleSlide:
+            return zoomScale > fitScale(for: viewportSize) + 0.02
+        }
+    }
+
+    /// Canva-style pan rules:
+    /// • singleSlide: hard-locked to center at/below fit zoom; clamped overscroll when zoomed in.
+    /// • continuousVertical: horizontal locked to center unless zoomed in; vertical always free (page flow).
     public func clampPanOffset(for viewportSize: CGSize) {
         guard viewportSize.width > 1 && viewportSize.height > 1 else { return }
         if pageLayoutMode == .infiniteWhiteboard { return }
-        let fit = fitScale(for: viewportSize)
-        // When zoomed-out at or below fit, lock centered (Canva behavior)
-        if zoomScale <= fit + 0.02 {
-            if panOffset != .zero {
-                panOffset = .zero
-            }
-            return
-        }
-        // When zoomed-in, limit panning so the page cannot be dragged completely off-screen
+
+        let margin: CGFloat = 60 // allowed overscroll past the page edge when zoomed in
         let scaledW = currentPage.width * zoomScale
         let scaledH = currentPage.height * zoomScale
-        let margin: CGFloat = 80 // allow 80px overscroll past edge
-        // Horizontal: shared for both modes
-        let maxPanX = max(0, (scaledW - viewportSize.width) / 2.0 + margin)
-        var nx = min(maxPanX, max(-maxPanX, panOffset.x))
-        // Vertical: for singleSlide lock similarly; for continuousVertical allow free vertical scroll
-        var ny = panOffset.y
-        if pageLayoutMode == .singleSlide {
-            let maxPanY = max(0, (scaledH - viewportSize.height) / 2.0 + margin)
-            ny = min(maxPanY, max(-maxPanY, ny))
-        } else if pageLayoutMode == .continuousVertical {
-            // For continuous document, allow larger vertical panning to scroll through pages
-            // but keep horizontal centered. Vertical clamp is permissive.
-            let totalH = totalContinuousHeight(viewportSize: viewportSize)
-            _ = totalH
-            // No vertical clamp for continuousVertical here; scrolling is via panOffset.y freely
-        }
-        panOffset = CGPoint(x: nx, y: ny)
-    }
+        let fit = fitScale(for: viewportSize)
 
-    private func totalContinuousHeight(viewportSize: CGSize) -> CGFloat {
-        let pagesCount = CGFloat(project.pages.count)
-        let pageGap: CGFloat = 56.0
-        return pagesCount * CGFloat(currentPage.height) + (pagesCount - 1) * pageGap + 140.0
+        switch pageLayoutMode {
+        case .singleSlide:
+            if zoomScale <= fit + 0.02 {
+                // Fixed place: the slide sits centered above the filmstrip, immovable.
+                if panOffset != .zero { panOffset = .zero }
+            } else {
+                let maxPanX = max(0, (scaledW - viewportSize.width) / 2.0 + margin)
+                let maxPanY = max(0, (scaledH - effectiveViewportSize(viewportSize).height) / 2.0 + margin)
+                panOffset = CGPoint(
+                    x: min(maxPanX, max(-maxPanX, panOffset.x)),
+                    y: min(maxPanY, max(-maxPanY, panOffset.y))
+                )
+            }
+
+        case .continuousVertical:
+            // Horizontal unlocks only once zoomed past fit ("zoom in before moving sideways")
+            let maxX: CGFloat = zoomScale <= fit + 0.02
+                ? 0
+                : max(0, (scaledW - viewportSize.width) / 2.0 + margin)
+            // Vertical is the document flow — always free.
+            panOffset = CGPoint(x: min(maxX, max(-maxX, panOffset.x)), y: panOffset.y)
+
+        case .infiniteWhiteboard:
+            break
+        }
     }
 
     // MARK: - Zoom Controls
@@ -1609,15 +1644,15 @@ public final class CanvasDocumentViewModel: ObservableObject {
             return
         }
 
-        let hPadding: CGFloat = 80
-        let vPadding: CGFloat = 110
-        let availableW = max(50, viewportSize.width - hPadding)
-        let availableH = max(50, viewportSize.height - vPadding)
+        let eff = effectiveViewportSize(viewportSize)
+        let availableW = max(50, eff.width - 80)
+        let availableH = max(50, eff.height - 110)
 
         let wRatio = availableW / currentPage.width
         let hRatio = availableH / currentPage.height
         let fit = min(wRatio, hRatio)
         zoomScale = max(0.15, min(1.5, fit))
+        lastFitZoom = zoomScale
         panOffset = .zero
     }
 

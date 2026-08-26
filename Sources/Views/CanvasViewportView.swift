@@ -21,6 +21,17 @@ public struct CanvasViewportView: View {
 
     // Canva-style page overview grid (thumbnails)
     @State private var showPageGridOverlay: Bool = false
+    // Tracks bottom-rail visibility so fit/zoom re-runs when it appears/disappears
+    @State private var filmstripWasVisible: Bool = false
+    // Ensures the first real fit happens against a settled (non-transition) viewport
+    @State private var didInitialFit: Bool = false
+
+    /// Refits only while the user hasn't manually zoomed since the last programmatic fit.
+    private func refitIfUntouched(_ size: CGSize) {
+        if viewModel.lastFitZoom == nil || viewModel.zoomScale == viewModel.lastFitZoom! {
+            viewModel.zoomToFit(viewportSize: size)
+        }
+    }
 
     public init(viewModel: CanvasDocumentViewModel) {
         self.viewModel = viewModel
@@ -41,6 +52,10 @@ public struct CanvasViewportView: View {
 
     public var body: some View {
         GeometryReader { geometry in
+            // Canva-style bottom rail reserve: presentation & document pages float in the
+            // space ABOVE the filmstrip so page and page-switcher never overlap.
+            let filmstripVisible = viewModel.pageLayoutMode != .infiniteWhiteboard && viewModel.project.pages.count > 1
+            let bottomReserved: CGFloat = filmstripVisible ? 108 : 0
             ZStack {
                 // 1. Dynamic Workspace Backdrop (visual only)
                 Group {
@@ -116,7 +131,7 @@ public struct CanvasViewportView: View {
                             .scaleEffect(viewModel.zoomScale)
                             .position(
                                 x: geometry.size.width / 2.0 + viewModel.panOffset.x,
-                                y: geometry.size.height / 2.0 + viewModel.panOffset.y
+                                y: (geometry.size.height - bottomReserved) / 2.0 + viewModel.panOffset.y
                             )
                     }
                 }
@@ -124,7 +139,7 @@ public struct CanvasViewportView: View {
                     // Pan Gesture when in Hand mode or holding Spacebar (clamped for presentation)
                     DragGesture(minimumDistance: 1)
                         .onChanged { value in
-                            if isHandOrPanMode || NSEvent.modifierFlags.contains(.control) || NSEvent.modifierFlags.contains(.option) {
+                            if (isHandOrPanMode || NSEvent.modifierFlags.contains(.control) || NSEvent.modifierFlags.contains(.option)) && viewModel.canPan(viewportSize: geometry.size) {
                                 if !isPanningCanvas {
                                     isPanningCanvas = true
                                     panStartOffset = viewModel.panOffset
@@ -154,8 +169,8 @@ public struct CanvasViewportView: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
 
-                // 4. Floating Modern Page Navigation Dock (Bottom Left - Hidden in single-page whiteboard)
-                if viewModel.pageLayoutMode != .infiniteWhiteboard || viewModel.project.pages.count > 1 {
+                // 4. Page Navigation Dock — whiteboard only (documents use the bottom rail)
+                if viewModel.pageLayoutMode == .infiniteWhiteboard && viewModel.project.pages.count > 1 {
                     VStack {
                         Spacer()
                         HStack {
@@ -196,25 +211,27 @@ public struct CanvasViewportView: View {
                         .zIndex(50)
                 }
 
-                // 4c. Canva-Style Bottom Filmstrip (presentation / document pages)
-                if viewModel.pageLayoutMode != .infiniteWhiteboard && viewModel.project.pages.count > 1 {
+                // 4c. Unified Bottom Rail — filmstrip + zoom in one bar (documents & presentations)
+                if filmstripVisible {
                     VStack {
                         Spacer()
-                        bottomFilmstripView
-                            .padding(.horizontal, 80)
-                            .padding(.bottom, 16)
+                        bottomBarView
+                            .padding(.horizontal, 24)
+                            .padding(.bottom, 14)
                     }
                     .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
 
-                // 5. Floating Canva-Style Zoom Drag Slider Dock (Bottom Right)
-                VStack {
-                    Spacer()
-                    HStack {
+                // 5. Floating Zoom Dock — whiteboard only (documents use the bottom rail)
+                if viewModel.pageLayoutMode == .infiniteWhiteboard {
+                    VStack {
                         Spacer()
-                        floatingZoomSliderDock(viewportSize: geometry.size)
-                            .padding(.trailing, 16)
-                            .padding(.bottom, viewModel.pageLayoutMode != .infiniteWhiteboard && viewModel.project.pages.count > 1 ? 110 : 16)
+                        HStack {
+                            Spacer()
+                            floatingZoomSliderDock(viewportSize: geometry.size)
+                                .padding(.trailing, 16)
+                                .padding(.bottom, 16)
+                        }
                     }
                 }
 
@@ -250,15 +267,47 @@ public struct CanvasViewportView: View {
             .clipped()
             .onAppear {
                 initialZoomScale = viewModel.zoomScale
+                viewModel.bottomInset = bottomReserved
+                filmstripWasVisible = filmstripVisible
                 viewModel.updateViewportSize(geometry.size)
-                viewModel.zoomToFit(viewportSize: geometry.size)
+                if geometry.size.width > 100 {
+                    didInitialFit = true
+                    viewModel.zoomToFit(viewportSize: geometry.size)
+                }
             }
             .onChange(of: geometry.size) { oldSize, newSize in
+                viewModel.bottomInset = bottomReserved
                 viewModel.updateViewportSize(newSize)
-                if viewModel.zoomScale == 0.65 {
+                if !didInitialFit && newSize.width > 100 {
+                    // First settled layout (dashboard→editor transition can report tiny frames)
+                    didInitialFit = true
+                    viewModel.zoomToFit(viewportSize: newSize)
+                } else if viewModel.zoomScale == 0.65 {
+                    viewModel.zoomToFit(viewportSize: newSize)
+                } else if let fitZoom = viewModel.lastFitZoom, viewModel.zoomScale == fitZoom {
+                    // User hasn't zoomed since the last fit → keep the page fitted on resize
                     viewModel.zoomToFit(viewportSize: newSize)
                 }
             }
+            .onChange(of: viewModel.project.pages.count) { _, newCount in
+                // Bottom rail appeared/disappeared → refit so the page clears it
+                let visible = viewModel.pageLayoutMode != .infiniteWhiteboard && newCount > 1
+                if visible != filmstripWasVisible {
+                    filmstripWasVisible = visible
+                    viewModel.bottomInset = visible ? 108 : 0
+                    viewModel.zoomToFit(viewportSize: geometry.size)
+                }
+            }
+            .onChange(of: viewModel.pageLayoutMode) { _, newMode in
+                // Template/preset swaps can flip the layout (A4 ↔ presentation ↔ board):
+                // re-reserve the rail and refit for the new geometry.
+                let visible = newMode != .infiniteWhiteboard && viewModel.project.pages.count > 1
+                filmstripWasVisible = visible
+                viewModel.bottomInset = visible ? 108 : 0
+                viewModel.zoomToFit(viewportSize: geometry.size)
+            }
+            .onChange(of: viewModel.currentPage.width) { _, _ in refitIfUntouched(geometry.size) }
+            .onChange(of: viewModel.currentPage.height) { _, _ in refitIfUntouched(geometry.size) }
             .onChange(of: viewModel.zoomScale) { _, _ in
                 viewModel.clampPanOffset(for: geometry.size)
             }
@@ -1060,59 +1109,126 @@ public struct CanvasViewportView: View {
         .shadow(color: Color.black.opacity(0.12), radius: 10, x: 0, y: 4)
     }
 
-    // MARK: - Canva-Style Bottom Filmstrip (Page Thumbnails)
+    // MARK: - Unified Bottom Rail (Canva-style): page filmstrip + zoom optics in one bar
 
-    private var bottomFilmstripView: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 10) {
-                ForEach(Array(viewModel.project.pages.enumerated()), id: \.element.id) { idx, page in
-                    let isActive = viewModel.activePageIndex == idx
-                    ZStack(alignment: .bottomLeading) {
-                        Group {
-                            if let thumb = PageThumbnailService.shared.thumbnail(for: page, targetWidth: 140) {
-                                Image(nsImage: thumb)
-                                    .resizable()
-                                    .aspectRatio(contentMode: .fit)
-                                    .frame(width: 110, height: 62)
-                            } else {
-                                Rectangle()
-                                    .fill(Color.secondary.opacity(0.08))
-                                    .frame(width: 110, height: 62)
-                            }
-                        }
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 6)
-                                .stroke(isActive ? Color(hex: "#C2410C") : Color.black.opacity(0.12), lineWidth: isActive ? 2 : 1)
-                        )
-                        .shadow(color: isActive ? Color(hex: "#C2410C").opacity(0.25) : .clear, radius: 4, x: 0, y: 2)
-
-                        // Page number badge (Canva style)
-                        Text("\(idx + 1)")
-                            .font(.system(size: 10, weight: .bold, design: .monospaced))
-                            .foregroundColor(.white)
-                            .frame(width: 18, height: 18)
-                            .background(isActive ? Color(hex: "#C2410C") : Color.black.opacity(0.55))
-                            .clipShape(Circle())
-                            .padding(5)
-                    }
-                    .onTapGesture {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            viewModel.activePageIndex = idx
-                            viewModel.selectedElementIds.removeAll()
+    private var bottomBarView: some View {
+        HStack(spacing: 14) {
+            // Filmstrip — the page switcher
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 10) {
+                        ForEach(Array(viewModel.project.pages.enumerated()), id: \.element.id) { idx, page in
+                            filmstripThumbnail(page: page, index: idx, isActive: viewModel.activePageIndex == idx)
+                                .id(idx)
                         }
                     }
-                    .help("Go to Page \(idx + 1)")
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 6)
+                }
+                .onChange(of: viewModel.activePageIndex) { _, newIdx in
+                    withAnimation(.easeInOut(duration: 0.22)) {
+                        proxy.scrollTo(newIdx, anchor: .center)
+                    }
                 }
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
+
+            Divider()
+                .frame(height: 40)
+
+            // Zoom optics
+            HStack(spacing: 8) {
+                Button(action: { viewModel.zoomOut() }) {
+                    Image(systemName: "minus")
+                        .font(.system(size: 11, weight: .bold))
+                        .frame(width: 24, height: 24)
+                }
+                .buttonStyle(CircleHoverButtonStyle(side: 24))
+                .help("Zoom Out")
+
+                Slider(
+                    value: Binding(
+                        get: { viewModel.zoomScale },
+                        set: { viewModel.zoomScale = $0 }
+                    ),
+                    in: 0.15...3.0
+                )
+                .frame(width: 76)
+                .controlSize(.mini)
+
+                Button(action: { viewModel.zoomIn() }) {
+                    Image(systemName: "plus")
+                        .font(.system(size: 11, weight: .bold))
+                        .frame(width: 24, height: 24)
+                }
+                .buttonStyle(CircleHoverButtonStyle(side: 24))
+                .help("Zoom In")
+
+                Text("\(Int(viewModel.zoomScale * 100))%")
+                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                    .frame(width: 38)
+
+                Button(action: { viewModel.zoomToFit(viewportSize: viewModel.lastViewportSize) }) {
+                    Image(systemName: "arrow.up.left.and.arrow.down.right")
+                        .font(.system(size: 10))
+                        .frame(width: 24, height: 24)
+                }
+                .buttonStyle(CircleHoverButtonStyle(side: 24))
+                .help("Fit to Screen")
+
+                Button(action: { withAnimation(.easeInOut(duration: 0.15)) { viewModel.showRulers.toggle() } }) {
+                    Image(systemName: "ruler")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(viewModel.showRulers ? Color(hex: "#C2410C") : .primary)
+                        .frame(width: 24, height: 24)
+                }
+                .buttonStyle(CircleHoverButtonStyle(side: 24, isSelected: viewModel.showRulers))
+                .help("Rulers & Guides (⌘R)")
+            }
         }
-        .frame(height: 86)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
         .background(.ultraThinMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 14))
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.secondary.opacity(0.2), lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.secondary.opacity(0.2), lineWidth: 1))
         .shadow(color: Color.black.opacity(0.12), radius: 10, x: 0, y: 4)
+    }
+
+    private func filmstripThumbnail(page: CanvasPage, index: Int, isActive: Bool) -> some View {
+        ZStack(alignment: .bottomLeading) {
+            Group {
+                if let thumb = PageThumbnailService.shared.thumbnail(for: page, targetWidth: 128) {
+                    Image(nsImage: thumb)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(width: 96, height: 54)
+                } else {
+                    Rectangle()
+                        .fill(Color.secondary.opacity(0.08))
+                        .frame(width: 96, height: 54)
+                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(isActive ? Color(hex: "#C2410C") : Color.black.opacity(0.12), lineWidth: isActive ? 2 : 1)
+            )
+            .shadow(color: isActive ? Color(hex: "#C2410C").opacity(0.25) : .clear, radius: 4, x: 0, y: 2)
+
+            Text("\(index + 1)")
+                .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                .foregroundColor(.white)
+                .frame(width: 17, height: 17)
+                .background(isActive ? Color(hex: "#C2410C") : Color.black.opacity(0.55))
+                .clipShape(Circle())
+                .padding(4)
+        }
+        .onTapGesture {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                viewModel.activePageIndex = index
+                viewModel.selectedElementIds.removeAll()
+            }
+        }
+        .help("Go to Page \(index + 1)")
     }
 
     // MARK: - Whiteboard Quick-Add Palette
@@ -1649,8 +1765,8 @@ public final class TrackpadGestureHostView: NSView {
                                 screenPoint: cursorPoint,
                                 viewportSize: CGSize(width: self.bounds.width, height: self.bounds.height)
                             )
-                        } else {
-                            // Smooth pan in X and Y (clamped for presentation mode)
+                        } else if vm.canPan(viewportSize: CGSize(width: self.bounds.width, height: self.bounds.height)) {
+                            // Smooth pan in X and Y — locked pages ignore scroll until zoomed in
                             let dx = event.scrollingDeltaX
                             let dy = event.scrollingDeltaY
                             let hasPrecise = event.hasPreciseScrollingDeltas

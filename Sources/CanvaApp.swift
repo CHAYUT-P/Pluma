@@ -51,6 +51,11 @@ struct PlumaApp: App {
                     PlumaBridgeServer.shared.start(viewModel: activeViewModel)
                 }
             }
+            .onReceive(NotificationCenter.default.publisher(for: .openEditor)) { _ in
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    isShowingDashboard = false
+                }
+            }
             .onChange(of: activeProject) { oldVal, newVal in
                 if let project = newVal {
                     activeViewModel.project = project
@@ -61,6 +66,7 @@ struct PlumaApp: App {
         }
         .windowStyle(.titleBar)
         .windowToolbarStyle(.unified(showsTitle: false))
+        .defaultSize(width: 1560, height: 980)
         .commands {
             CommandGroup(replacing: .newItem) {
                 Button("Home / Projects") {
@@ -179,6 +185,7 @@ extension Notification.Name {
     static let sendBackward = Notification.Name("sendBackward")
     static let sendToBack = Notification.Name("sendToBack")
     static let showExportModal = Notification.Name("showExportModal")
+    static let openEditor = Notification.Name("openEditor")
 }
 
 // MARK: - Headless Import Diagnostics (development harness)
