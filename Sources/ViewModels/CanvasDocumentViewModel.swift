@@ -1566,14 +1566,16 @@ public final class CanvasDocumentViewModel: ObservableObject {
         }
     }
 
-    /// Canva-style pan rules:
-    /// • singleSlide: hard-locked to center at/below fit zoom; clamped overscroll when zoomed in.
-    /// • continuousVertical: horizontal locked to center unless zoomed in; vertical always free (page flow).
-    public func clampPanOffset(for viewportSize: CGSize) {
-        guard viewportSize.width > 1 && viewportSize.height > 1 else { return }
-        if pageLayoutMode == .infiniteWhiteboard { return }
-
-        let margin: CGFloat = 60 // allowed overscroll past the page edge when zoomed in
+    /// Canva-style pan rules — pure function so gestures can pre-clamp BEFORE rendering
+    /// (locked axes never move a pixel, so there is no snap-back / rubber-band jank):
+    /// • singleSlide: hard-locked to center at/below fit zoom; when zoomed in, panning is
+    ///   bounded to the paper plus a 60px peek — never fully off the slide.
+    /// • continuousVertical: horizontal locked to center unless zoomed in past fit AND the
+    ///   page is wider than the viewport; vertical is the document flow, bounded to a
+    ///   60px peek past the document's start/end (no endless blank scrolling).
+    private func clampedPan(_ target: CGPoint, viewportSize: CGSize) -> CGPoint {
+        if pageLayoutMode == .infiniteWhiteboard { return target }
+        let margin: CGFloat = 60 // "a little bit" of workspace allowed past the paper edge
         let scaledW = currentPage.width * zoomScale
         let scaledH = currentPage.height * zoomScale
         let fit = fitScale(for: viewportSize)
@@ -1581,28 +1583,76 @@ public final class CanvasDocumentViewModel: ObservableObject {
         switch pageLayoutMode {
         case .singleSlide:
             if zoomScale <= fit + 0.02 {
-                // Fixed place: the slide sits centered above the filmstrip, immovable.
-                if panOffset != .zero { panOffset = .zero }
-            } else {
-                let maxPanX = max(0, (scaledW - viewportSize.width) / 2.0 + margin)
-                let maxPanY = max(0, (scaledH - effectiveViewportSize(viewportSize).height) / 2.0 + margin)
-                panOffset = CGPoint(
-                    x: min(maxPanX, max(-maxPanX, panOffset.x)),
-                    y: min(maxPanY, max(-maxPanY, panOffset.y))
-                )
+                return .zero // fixed place: slide centered above the filmstrip, immovable
             }
+            return CGPoint(
+                x: axisPanBound(target.x, scaled: scaledW, viewport: viewportSize.width, margin: margin),
+                y: axisPanBound(target.y, scaled: scaledH, viewport: effectiveViewportSize(viewportSize).height, margin: margin)
+            )
 
         case .continuousVertical:
-            // Horizontal unlocks only once zoomed past fit ("zoom in before moving sideways")
-            let maxX: CGFloat = zoomScale <= fit + 0.02
-                ? 0
-                : max(0, (scaledW - viewportSize.width) / 2.0 + margin)
-            // Vertical is the document flow — always free.
-            panOffset = CGPoint(x: min(maxX, max(-maxX, panOffset.x)), y: panOffset.y)
+            // Horizontal: locked unless zoomed in enough that the paper overflows the viewport
+            let x: CGFloat
+            if zoomScale <= fit + 0.02 || scaledW + 2 * margin <= viewportSize.width {
+                x = 0
+            } else {
+                let bound = (scaledW - viewportSize.width) / 2.0 + margin
+                x = min(bound, max(-bound, target.x))
+            }
+            // Vertical: document flow — bounded to a small peek past the doc's start/end
+            let stackH = totalStackHeight * zoomScale
+            let topPad: CGFloat = 40
+            let y: CGFloat
+            if topPad + stackH <= viewportSize.height - margin {
+                y = 0 // whole document fits → top-anchored, no vertical pan needed
+            } else {
+                let minY = viewportSize.height - topPad - stackH - margin
+                let maxY = margin - topPad
+                y = min(maxY, max(minY, target.y))
+            }
+            return CGPoint(x: x, y: y)
 
         case .infiniteWhiteboard:
-            break
+            return target
         }
+    }
+
+    /// One-axis bound: page may pan until only `margin` of workspace shows past its edge.
+    /// If the scaled page fits inside the viewport (with peek room), the axis is locked to 0.
+    private func axisPanBound(_ value: CGFloat, scaled: CGFloat, viewport: CGFloat, margin: CGFloat) -> CGFloat {
+        if scaled + 2 * margin <= viewport { return 0 }
+        let bound = (scaled - viewport) / 2.0 + margin
+        return min(bound, max(-bound, value))
+    }
+
+    /// Rendered height of the continuous page stack in canvas units (matches the view's layout).
+    private var totalStackHeight: CGFloat {
+        let n = CGFloat(max(1, project.pages.count))
+        let gap: CGFloat = 56.0
+        return n * CGFloat(currentPage.height) + (n - 1) * gap + 140.0
+    }
+
+    /// Re-clamps the current pan offset (viewport resize, zoom change, page switch…).
+    public func clampPanOffset(for viewportSize: CGSize) {
+        guard viewportSize.width > 1 && viewportSize.height > 1 else { return }
+        let clamped = clampedPan(panOffset, viewportSize: viewportSize)
+        if clamped != panOffset { panOffset = clamped }
+    }
+
+    /// Applies a pan DELTA with pre-clamping — used by scroll & hand-drag so locked axes
+    /// never move (fixes the "moves sideways then snaps back" laggy feel).
+    public func applyPan(delta: CGSize, viewportSize: CGSize) {
+        guard viewportSize.width > 1 && viewportSize.height > 1 else { return }
+        let target = CGPoint(x: panOffset.x + delta.width, y: panOffset.y + delta.height)
+        let clamped = clampedPan(target, viewportSize: viewportSize)
+        if clamped != panOffset { panOffset = clamped }
+    }
+
+    /// Sets an absolute pan position (drag gestures using start-offset + translation).
+    public func setPan(to point: CGPoint, viewportSize: CGSize) {
+        guard viewportSize.width > 1 && viewportSize.height > 1 else { return }
+        let clamped = clampedPan(point, viewportSize: viewportSize)
+        if clamped != panOffset { panOffset = clamped }
     }
 
     // MARK: - Zoom Controls

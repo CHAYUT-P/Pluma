@@ -145,11 +145,14 @@ public struct CanvasViewportView: View {
                                     panStartOffset = viewModel.panOffset
                                     NSCursor.closedHand.set()
                                 }
-                                viewModel.panOffset = CGPoint(
-                                    x: panStartOffset.x + value.translation.width,
-                                    y: panStartOffset.y + value.translation.height
+                                // Pre-clamped set: locked axes never move (no snap-back)
+                                viewModel.setPan(
+                                    to: CGPoint(
+                                        x: panStartOffset.x + value.translation.width,
+                                        y: panStartOffset.y + value.translation.height
+                                    ),
+                                    viewportSize: geometry.size
                                 )
-                                viewModel.clampPanOffset(for: geometry.size)
                             }
                         }
                         .onEnded { _ in
@@ -1766,18 +1769,18 @@ public final class TrackpadGestureHostView: NSView {
                                 viewportSize: CGSize(width: self.bounds.width, height: self.bounds.height)
                             )
                         } else if vm.canPan(viewportSize: CGSize(width: self.bounds.width, height: self.bounds.height)) {
-                            // Smooth pan in X and Y — locked pages ignore scroll until zoomed in
+                            // Smooth pan, pre-clamped per axis synchronously — locked axes
+                            // (e.g. horizontal on a fit-zoomed document) never move at all,
+                            // so there is no move-then-snap-back jank.
                             let dx = event.scrollingDeltaX
                             let dy = event.scrollingDeltaY
                             let hasPrecise = event.hasPreciseScrollingDeltas
                             let multiplier: CGFloat = hasPrecise ? 1.0 : 8.0
 
-                            vm.panOffset.x += dx * multiplier
-                            vm.panOffset.y += dy * multiplier
-                            // Clamp immediately so Canva-like locked centering holds
-                            DispatchQueue.main.async {
-                                vm.clampPanOffset(for: CGSize(width: self.bounds.width, height: self.bounds.height))
-                            }
+                            vm.applyPan(
+                                delta: CGSize(width: dx * multiplier, height: dy * multiplier),
+                                viewportSize: CGSize(width: self.bounds.width, height: self.bounds.height)
+                            )
                         }
                     }
                 }

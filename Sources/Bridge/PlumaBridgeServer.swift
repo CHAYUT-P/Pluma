@@ -322,6 +322,11 @@ public final class PlumaBridgeServer: ObservableObject {
             ProjectStorage.shared.saveProjectDebounced(vm.project)
             return respond("200 OK", ["ok": true, "applied": template.title, "pages": vm.project.pages.count])
 
+        case ("POST", "/open"):
+            // Raises the editor UI (used after bridge-driven template/import changes)
+            NotificationCenter.default.post(name: .openEditor, object: nil)
+            return respond("200 OK", ["ok": true])
+
         case ("POST", "/connect"):
             guard let req = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
                   let from = (req["from"] as? String).flatMap(UUID.init(uuidString:)),
