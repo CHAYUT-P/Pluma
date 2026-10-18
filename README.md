@@ -1,121 +1,151 @@
-# ⚡ CanvaNative (Lightweight Native macOS Graphic Studio)
+# Pluma
 
-A high-performance, native macOS graphic design application built from scratch in pure **Swift & SwiftUI** with **CoreGraphics** and **Metal** acceleration.
+A native macOS design studio — a lightweight, offline alternative to Canva, written in Swift and SwiftUI.
 
-Designed specifically to eliminate the notorious memory bloat and sluggishness of web/Electron-based design tools.
+Pluma covers slides, A4 documents, resumes, social posts and infinite whiteboards in one editor. It imports PowerPoint and Canva exports, exports PNG / JPEG / PDF / SVG / PPTX, and includes a local AI bridge so Claude, Cursor or any MCP client can design on the live canvas.
+
+- **Native**: SwiftUI + AppKit + CoreGraphics, no web view or Electron.
+- **Offline & private**: projects live on your Mac; nothing is uploaded.
+- **No dependencies**: a single Swift package, macOS 14+.
 
 ---
 
-## 🚀 Performance Comparison
+## Contents
 
-| Metric | Web / Electron Canva | **CanvaNative** |
+- [Getting started](#getting-started)
+- [The editor](#the-editor)
+- [Features](#features)
+- [Keyboard shortcuts](#keyboard-shortcuts)
+- [AI bridge & MCP server](#ai-bridge--mcp-server)
+- [Command-line tool](#command-line-tool)
+- [Development](#development)
+- [Project layout](#project-layout)
+
+---
+
+## Getting started
+
+Requirements: macOS 14 (Sonoma) or later and a Swift 5.10+ toolchain (Xcode 15.3+ or the Command Line Tools).
+
+```bash
+git clone https://github.com/CHAYUT-P/Pluma.git
+cd Pluma
+
+# Run a debug build straight from the package
+swift run
+
+# Or build a release .app and install it into /Applications
+./scripts/build_app.sh
+open /Applications/Pluma.app
+```
+
+`build_app.sh` builds in release mode, bundles the app icon and the MCP server, ad-hoc signs the bundle, quits any running Pluma and replaces `/Applications/Pluma.app`. Pass `--keep-local` to also keep a copy of `Pluma.app` in the project folder.
+
+---
+
+## The editor
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│ Home · title · page size · undo/redo │ tools · layout │ import · ▶ · Export│  toolbar
+├──────────────────────────────────────────────────────────────────────────┤
+│ contextual bar — font, size, color, alignment, opacity, arrange …         │
+├──────┬───────────┬──────────────────────────────────────┬────────────────┤
+│ rail │  drawer   │               canvas                 │   inspector    │
+│      │           │                                      │                │
+│      │           │   ┌ filmstrip ───────── zoom ┐       │                │
+└──────┴───────────┴──────────────────────────────────────┴────────────────┘
+```
+
+- **Toolbar**: select (V), hand (H), text (T), shape (R), code block (C) and pen (P). The ink dot beside the pen opens its width and color settings. The layout menu switches between **Slide**, **Document** and **Whiteboard**.
+- **Left rail**: Templates · Shapes · Text · Media · Icons · Brand · Background · Pages · Layers · Code. Toggle it with ⌘1.
+- **Inspector**: page settings when nothing is selected; otherwise Fill, Border, Typography, Image, Code, Position and Opacity & Shadow for the selection. Each section collapses and remembers its state. Toggle it with ⌘2.
+- **Bottom rail**: page filmstrip and zoom controls (Slide and Document modes).
+
+### Layout modes
+
+| Mode | Use it for | Behaviour |
 | :--- | :--- | :--- |
-| **RAM Usage** | **~6,000 MB – 10,000 MB (10 GB)** | **~35 MB – 50 MB** |
-| **Launch Time** | 5 – 15 seconds | **< 0.2 seconds (Instant)** |
-| **Frame Rate** | 30 – 60 FPS (with lag spikes) | **120 FPS ProMotion Native** |
-| **Offline Mode** | Limited / Cloud dependent | **100% Offline & Private** |
-| **Battery Impact** | Heavy thermal throttling & fan spin | **Near-zero CPU/battery draw** |
+| **Slide** | Decks, social posts | One page at a time, centered above the filmstrip |
+| **Document** | A4 documents, resumes, reports | All pages in a vertical scroll |
+| **Whiteboard** | Mind maps, flowcharts, sticky boards | Boundless dot-grid board with a quick-add palette |
 
 ---
 
-## ✨ Features
+## Features
 
-### 1. Vector & Layout Canvas Engine
-- **Infinite Zoom & Pan**: Sub-pixel zoom from 10% to 400%, spacebar pan, trackpad pinch & smooth scroll.
-- **Smart Alignment Snapping**: Dynamic smart guides (magenta/pink alignment lines) that snap to artboard centers, edges, and adjacent elements.
-- **8-Handle Precision Transform**: Interactive resize handles with optional aspect ratio lock (`Shift+Drag`), and an orbital rotation wheel with angle snapping (0°, 45°, 90°, 180°, 270°).
-- **Multi-Selection & Marquee**: Drag-select multiple elements across the canvas, or `Shift+Click` to toggle selection.
-- **Multi-Page Artboards**: Work across multiple pages with page tabs, duplicate, add, and reorder.
+### Canvas
+- Zoom with ⌘-scroll or pinch (focal, under the cursor), pan with two-finger scroll, Space-drag or the hand tool.
+- Smart guides that snap to page edges, centers and neighbouring elements; rulers with draggable guides (⌘R); optional grid.
+- Rotation-aware 8-handle transform; corner drags scale text with the box.
+- Marquee and Shift-click multi-select, groups (⌘G / ⇧⌘G), locking (⌘L — locked elements are click-through), alignment and distribution, flip, z-order, arrow-key nudging.
+- Anchored connectors (`L`) that follow the elements they join.
+- Undo/redo for every edit; a slider or color drag is a single undo step.
 
-### 2. Rich Element Types
-- **Shapes & Vector Graphics**: Rectangles (adjustable corner radius), Circles/Ellipses, Stars (custom point count), Polygons (custom sides), Diamonds, Hearts, Arrows, Speech Bubbles, Badges, Lines.
-- **Advanced Fills**: Solid Colors, Multi-Stop Linear Gradients, Radial Glow Gradients, Frosted Glass (Glassmorphism), and Dot/Grid Pattern fills.
-- **Typography Engine**: Access to macOS system fonts, custom font size, weight (300 to 900), letter spacing (tracking), line height, text alignments, shadow/neon glow effects, and underline/italic styling.
-- **Image & Photo Filters**: Real-time CoreImage filters (Brightness, Contrast, Saturation, Blur, Sepia, Grayscale, Invert, Vignette), corner radii, and borders.
-- **SF Symbols Library**: Searchable built-in library of thousands of SF Symbols organized into categories with custom color tints.
-- **Freehand Pen & Brush**: Smooth bezier curve drawing tool with adjustable stroke width and color.
+### Elements
+- **Shapes**: rectangles, ellipses, stars, polygons, arrows, speech bubbles, badges, lines and stationery shapes (washi tape, postage stamp, wax seal, torn paper…), with solid, gradient, glass and pattern fills, borders and corner radius.
+- **Text**: macOS system fonts, weight, tracking, line height, alignment, outline / neon / shadow / pill effects, curved text. Boxes auto-fit their height.
+- **Images**: CoreImage adjustments (brightness, contrast, saturation, blur, sepia, grayscale…), shaped photo frames, and on-device background removal with Vision.
+- **Icons**: searchable SF Symbols library with tinting.
+- **Code blocks**: syntax-highlighted snippets (Swift, Python, TypeScript, Rust, JSON…) with editor themes.
+- **Developer kit** (Code tab): terminal and browser windows, database and server symbols, API chips, status badges, keycaps, and diagram stamps (request flow, CI/CD pipeline, kanban, git branches).
+- **Pen**: freehand strokes with smoothing; width and ink set from the toolbar.
+- **QR codes**: vector QR generator with custom colors.
 
-### 3. Built-In Starter Templates (30+)
-- 🧠 **Whiteboards**: Product Strategy Mindmap • System Architecture Flowchart • Agile Sticky Board • Kanban Delivery Board • SWOT Analysis • User Journey Map
-- 📄 **Resumes & CVs (10)**: Tech/AI Lead • Executive & Board Director • Creative Director • Ivy League Academic • Growth Marketing • Two-Column Minimal • Bold Impact Creative • Healthcare/Clinical • Student & Internship • Sales Manager
-- 🚀 **Presentations**: Curatorial Gallery • Artisan Portfolio • Product Vision Keynote (full 5-slide decks)
-- 📰 **A4 Documents**: Retro Newspaper • Metropolitan Broadsheet • Haute Couture Lookbook • VC Investment Memo • Bauhaus Review • Letterpress Poster • Nordic Invoice
-- 📱 **Social**: Square posts, Stories, YouTube thumbnails, Flash-sale promos, Business cards
+### Templates
+40+ built-in templates across whiteboards (mind map, architecture flowchart, sticky board, kanban, SWOT, user journey), resumes and CVs, presentation decks, A4 documents (newspaper, broadsheet, lookbook, investment memo, invoice, annual report…) and social posts.
 
-### 4. PowerPoint / Canva Import (High-Fidelity)
-- **.pptx**: Exact EMU→px geometry, theme colors & gradients, placeholder inheritance from layouts/masters, tables, SmartArt fallback, shadows, connectors, grouped shapes, vertical text, autofit.
-- **Native charts render**: bar / column / line / area / pie charts from embedded `c:chart` XML are re-rendered with axes, gridlines, series colors, labels and legends.
-- **Images that actually come through**: EMF/WMF embedded bitmaps are extracted and decoded (most Office decks store pictures this way), plus PNG/JPEG/GIF/WebP/TIFF. Undecodable images get a visible placeholder instead of silently disappearing.
-- **Text that stays in place**: paragraphs are measured with real font metrics (wrapping included) and merged into editable text boxes — no more overlapping or drifting lines. Wingdings/Symbol bullet glyphs are mapped to real Unicode.
-- **Canva exports**: PDF (multi-page, 2× retina), SVG, and PPTX all import; ZIP of images becomes one page per image.
-- Clear error dialog if a file can't be read — never a silent failure.
+### Import
+- **PowerPoint (.pptx)**: geometry, theme colors and gradients, layout/master placeholder inheritance, tables, groups, connectors, shadows, autofit text, native charts (bar, column, line, area, pie) and embedded EMF/WMF pictures.
+- **Canva exports**: multi-page PDF, SVG and PPTX.
+- **Images and ZIPs**: a ZIP of images becomes one page per image.
+- **Pluma projects**: `.canv` / `.pluma` files.
 
-### 5. Page Thumbnails & Navigation (Canva-style)
-- **Pages tab** shows a live mini-preview of every page (auto-refreshes after every confirmed move/resize/edit).
-- **Page Overview Grid** (grid button in the page dock): all pages as thumbnails — click to jump, hover for duplicate/delete, **drag to reorder**, **double-click the name to rename**.
-- Floating page dock with prev/next, page counter, and quick add.
+### Export
+- **PNG** at 1×–4× with optional transparency, **JPEG** with adjustable quality, vector **PDF**, **SVG** and **PPTX**.
+- Export every page as numbered PNGs in one step.
+- Copy the page as PNG (⇧⌘C) or as SVG for Figma (⌥⌘C).
+- Full-screen presentation mode (⌥⌘P).
 
-### 6. Whiteboard Mode (Figma/Miro Style)
-- Infinite dot-grid board with viewport culling for silky panning.
-- **Quick-add palette**: select, pen, sticky note, text, shape, arrow, star, connect, undo.
-- **Anchored connectors** (`L`): arrows glue two elements together and follow them when moved, resized, or rotated.
-- **Double-click empty space → instant sticky note** at that point, ready to type.
-
-### 6b. Precision Tools
-- **Rulers & guides** (⌘R): drag from a ruler to create a guide; guides snap elements while dragging; drag off-page or double-click to remove.
-- **⌘K command palette**: search every command, page, and tool.
-- **Zoom to selection** (`F`), arrow-key nudging, group shortcuts (⌘G / ⇧⌘G).
-- **Export all pages** as numbered 2× PNGs to a folder in one click; copy any single element as an image.
-
-### 7. High-Resolution Native Export
-- **PNG**: 1x, 2x HD, 3x Retina, 4x Ultra resolution with transparent background support.
-- **JPEG**: Adjustable compression quality (0.5 to 1.0) and high DPI output.
-- **PDF**: Crisp vector PDF document generation.
-- **SVG**: Standards-compliant vector markup output.
-- **PPTX**: export decks back to PowerPoint format.
-- **Native Clipboard Copy (`⇧⌘C`)**: Instantly copy high-res PNG to clipboard to paste directly into Slack, Figma, Twitter, or Keynote.
-- **Project Files (`.canv`)**: Save and reload entire design projects locally.
+### Projects
+Projects autosave to `~/Library/Application Support/CanvaNative/Projects/` as `.canv` JSON files. The Home dashboard lists recent projects, templates and size presets.
 
 ---
 
-## ⌨️ Keyboard Shortcuts
+## Keyboard shortcuts
 
 | Shortcut | Action |
 | :--- | :--- |
-| `V` | Selection Tool |
-| `T` | Add Text |
-| `R` | Add Rectangle / Shape |
-| `O` | Add Circle |
-| `P` | Toggle Draw / Brush Tool |
-| `L` | Connect selected elements (anchored connector chain) |
-| `F` | Zoom to selection (fit page when nothing selected) |
-| `↑ ↓ ← →` | Nudge selection 1px (hold `Shift` for 10px) |
-| `⌘K` | Command palette (search every action, page, template) |
-| `⌘R` | Toggle rulers & draggable guides |
-| `⌘G` / `⇧⌘G` | Group / Ungroup selection |
-| `⌘Z` | Undo |
-| `⇧⌘Z` | Redo |
-| `⌘C` | Copy Element |
-| `⌘V` | Paste Element |
-| `⌘D` | Duplicate Element |
-| `⌘A` | Select All Elements |
-| `Delete` / `⌫` | Delete Selected |
-| `⌘]` | Bring Forward |
-| `⌥⌘]` | Bring to Front |
-| `⌘[` | Send Backward |
-| `⌥⌘[` | Send to Back |
-| `⇧⌘C` | Copy HD Image to Clipboard |
-| `⌘E` | Open Export Modal |
-| `⌘+` / `⌘-` | Zoom In / Zoom Out |
-| `⌘0` | Zoom to 100% |
+| `V` / `H` | Select tool / Hand tool |
+| `T` · `R` · `O` · `C` | Add text · rectangle · ellipse · code block |
+| `P` | Toggle the pen |
+| `L` | Connect selected elements |
+| `F` | Zoom to selection (or fit the page) |
+| `Space` + drag | Pan the canvas |
+| `↑ ↓ ← →` | Nudge 1 px (`Shift` for 10 px) |
+| `⌫` / `Esc` | Delete selection / Deselect or stop editing |
+| `⌘Z` / `⇧⌘Z` | Undo / Redo |
+| `⌘C` · `⌘V` · `⌘D` · `⌘A` | Copy · Paste · Duplicate · Select all |
+| `⌘G` / `⇧⌘G` | Group / Ungroup |
+| `⌘L` | Lock / unlock |
+| `⌘]` / `⌥⌘]` | Bring forward / Bring to front |
+| `⌘[` / `⌥⌘[` | Send backward / Send to back |
+| `⌘=` · `⌘-` · `⌘0` | Zoom in · Zoom out · 100% |
+| `⌘1` / `⌘2` | Toggle left panel / inspector |
+| `⌘R` | Toggle rulers & guides |
+| `⌘K` | Command palette |
+| `⌘E` | Export |
+| `⇧⌘C` / `⌥⌘C` | Copy page as PNG / as SVG for Figma |
+| `⌥⌘P` | Present full screen |
+| `⌘N` / `⇧⌘H` | New canvas / Back to Home |
 
 ---
 
-## 🤖 AI-Ready (MCP Server)
+## AI bridge & MCP server
 
-Pluma ships with a built-in **AI bridge**: a localhost-only HTTP server (127.0.0.1:9470, auto-started with the app) plus a dependency-free MCP server so Claude Desktop, Cursor, or any MCP client can design **directly in the live app** — including **seeing the canvas via screenshots**.
+While Pluma runs, it serves a small HTTP API on `127.0.0.1:9470` (localhost only). `scripts/pluma_mcp_server.py` is a dependency-free MCP server that wraps it, so an AI assistant can read the page, take screenshots and edit the open design live.
 
-**Connect Claude Desktop / Cursor:** click the ✨ button in Pluma's toolbar (copies the config), or add manually:
+**Connect Claude Desktop, Cursor or another MCP client.** Click the ✨ button in the toolbar to copy the config, or add it by hand:
 
 ```json
 {
@@ -128,31 +158,74 @@ Pluma ships with a built-in **AI bridge**: a localhost-only HTTP server (127.0.0
 }
 ```
 
-**17 AI tools:** status • get page • **screenshot (vision!)** • add element (text/shapes/sticky/code/image) • update • delete • duplicate • reorder • connect (anchored arrows) • add/select page • undo/redo • save • list/apply templates • design guide.
+**Tools (19):** `status`, `get_page`, `screenshot`, `add_element`, `update_element`, `delete_element`, `duplicate_element`, `reorder_element`, `add_code_block`, `clear_page`, `connect_elements`, `add_page`, `select_page`, `undo`, `redo`, `save`, `list_templates`, `apply_template`, `design_guide` (all prefixed `pluma_`).
 
-Example prompts: *"Make me a 5-slide pitch deck for a coffee startup"*, *"Add a pricing section with three cards"*, *"Rearrange this board into columns and connect the flow"* — the AI edits the live canvas, screenshots its work, and fixes layout issues on its own.
+You can also call the HTTP API directly — `GET /help` lists every route:
 
-Disable with `PLUMA_BRIDGE=0`; change port with `PLUMA_PORT` (then set the same env for the MCP server).
+```bash
+curl -s localhost:9470/health
+curl -s -X POST localhost:9470/template -d '{"id":"annual_report"}'
+```
+
+| Variable | Effect |
+| :--- | :--- |
+| `PLUMA_BRIDGE=0` | Disable the bridge |
+| `PLUMA_PORT=<port>` | Use another port (set it for the MCP server too) |
 
 ---
 
-## 🛠️ How to Build & Run
+## Command-line tool
 
-### Quick Launch via Terminal
+`scripts/pluma_cli.py` works on project files directly, without the app running:
+
 ```bash
-# Run directly in development mode
-swift run
-
-# Or build the release .app bundle
-./scripts/build_app.sh
-
-# Launch the standalone macOS app
-open CanvaNative.app
+python3 scripts/pluma_cli.py list
+python3 scripts/pluma_cli.py create --help
+python3 scripts/pluma_cli.py add-text --help
+python3 scripts/pluma_cli.py open
 ```
 
-### Install into `/Applications`
+Commands: `list`, `create`, `get`, `add-text`, `add-shape`, `open`.
+
+---
+
+## Development
+
 ```bash
-./scripts/build_app.sh
-cp -R CanvaNative.app /Applications/
+swift build      # debug build
+swift test       # unit tests (Tests/PlumaTests)
 ```
-# Pluma
+
+The tests cover the object model (z-order, clipboard, alignment, groups, locking, undo, pages, snapping), the PPTX importer, and the render path (paint-order cache and single-publish edits).
+
+Environment variables that are useful during development:
+
+| Variable | Effect |
+| :--- | :--- |
+| `PLUMA_STORAGE_ROOT=<dir>` | Store projects in `<dir>` instead of Application Support, so test runs never touch real projects |
+| `PLUMA_APPEARANCE=light\|dark` | Force the app appearance without changing the system setting |
+
+```bash
+PLUMA_STORAGE_ROOT=/tmp/pluma-scratch PLUMA_APPEARANCE=dark swift run
+```
+
+Editor colors and type come from `Sources/Views/Components/PlumaTheme.swift`; use its tokens rather than hard-coded hex values so light and dark mode stay consistent.
+
+---
+
+## Project layout
+
+```
+Sources/
+  CanvaApp.swift            App entry point, menus and commands
+  Bridge/                   Localhost HTTP bridge used by the MCP server
+  Engine/                   Export, snapping and vector geometry
+  Models/                   Project, page, element and style models; storage
+  Templates/                Built-in template catalog
+  Utilities/                Importers (PPTX, PDF, SVG), text measurement, thumbnails, presets
+  ViewModels/               CanvasDocumentViewModel (editor state, undo history)
+  Views/                    Toolbar, canvas, left drawer tabs, inspector, modals
+Tests/PlumaTests/           XCTest suites
+Resources/                  App icon and textures
+scripts/                    build_app.sh, MCP server, CLI, icon generators
+```
