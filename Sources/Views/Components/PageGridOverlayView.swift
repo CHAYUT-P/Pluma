@@ -40,7 +40,16 @@ public struct PageGridOverlayView: View {
         .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.secondary.opacity(0.25), lineWidth: 1))
         .shadow(color: Color.black.opacity(0.25), radius: 28, x: 0, y: 12)
         .onAppear(perform: renderThumbnails)
-        .onChange(of: viewModel.project) { _, _ in renderThumbnails() }
+        .onChange(of: viewModel.project) { _, _ in
+            // Skip per-tick work while a gesture streams; refresh on commit.
+            guard !viewModel.isLiveTransforming else { return }
+            renderThumbnails()
+        }
+        .onChange(of: viewModel.isLiveTransforming) { _, isLive in
+            if !isLive {
+                renderThumbnails()
+            }
+        }
     }
 
     private var header: some View {
@@ -50,7 +59,7 @@ public struct PageGridOverlayView: View {
                 .foregroundColor(Color(hex: "#C2410C"))
 
             Text("PAGES")
-                .font(.system(size: 12, weight: .bold, design: .serif))
+                .font(.system(size: 12, weight: .bold))
                 .tracking(1)
                 .foregroundColor(.primary)
 
@@ -65,7 +74,7 @@ public struct PageGridOverlayView: View {
                     Image(systemName: "plus")
                         .font(.system(size: 10, weight: .bold))
                     Text("Add")
-                        .font(.system(size: 11, weight: .bold, design: .serif))
+                        .font(.system(size: 11, weight: .bold))
                 }
                 .foregroundColor(Color(hex: "#C2410C"))
             }
@@ -121,7 +130,7 @@ public struct PageGridOverlayView: View {
                 Image(systemName: "plus")
                     .font(.system(size: 18, weight: .semibold))
                 Text("Add page")
-                    .font(.system(size: 11, weight: .semibold, design: .serif))
+                    .font(.system(size: 11, weight: .semibold))
             }
             .foregroundColor(Color(hex: "#C2410C"))
             .frame(width: thumbWidth, height: thumbnailHeight(for: viewModel.currentPage))
@@ -246,10 +255,10 @@ public struct PageGridOverlayView: View {
                     onCommit: { renamingPageID = nil }
                 )
                 .textFieldStyle(.roundedBorder)
-                .font(.system(size: 10.5, weight: .semibold, design: .serif))
+                .font(.system(size: 10.5, weight: .semibold))
             } else {
                 Text(page.name)
-                    .font(.system(size: 10.5, weight: isCurrent ? .bold : .medium, design: .serif))
+                    .font(.system(size: 10.5, weight: isCurrent ? .bold : .medium))
                     .lineLimit(1)
                     .contentShape(Rectangle())
                     .onTapGesture(count: 2) {

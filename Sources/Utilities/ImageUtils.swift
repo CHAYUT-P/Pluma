@@ -25,7 +25,7 @@ public enum ImageUtils {
     /// Cheap stable-enough in-memory key: length + head + tail of the payload.
     /// Avoids hashing megabytes on every frame while being collision-safe here.
     private static func payloadKey(_ base64String: String) -> String {
-        "\(base64String.count)|\(base64String.prefix(96))|\(base64String.suffix(96))"
+        "\(base64String.utf8.count)|\(base64String.prefix(96))|\(base64String.suffix(96))"
     }
 
     public static func nsImage(from base64String: String) -> NSImage? {

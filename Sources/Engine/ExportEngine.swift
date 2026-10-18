@@ -463,28 +463,29 @@ public enum ExportEngine {
                     """
 
                 case .image(let imageContent):
-                    globalImageIndex += 1
-                    slideRelCounter += 1
-                    let imgFilename = "image\(globalImageIndex).png"
-                    let rId = "rId\(slideRelCounter)"
-
+                    // Emit the rel + <p:pic> ONLY when the media payload actually
+                    // lands — a dangling rel makes PowerPoint refuse/repair the file.
+                    let imgFilename = "image\(globalImageIndex + 1).png"
                     if let imgData = ImageUtils.nsImage(from: imageContent.imageBase64)?.tiffRepresentation,
                        let bitmap = NSBitmapImageRep(data: imgData),
-                       let pngBytes = bitmap.representation(using: .png, properties: [:]) {
-                        try? pngBytes.write(to: mediaDir.appendingPathComponent(imgFilename))
+                       let pngBytes = bitmap.representation(using: .png, properties: [:]),
+                       (try? pngBytes.write(to: mediaDir.appendingPathComponent(imgFilename))) != nil {
+                        globalImageIndex += 1
+                        slideRelCounter += 1
+                        let rId = "rId\(slideRelCounter)"
+
+                        slideRels += "  <Relationship Id=\"\(rId)\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/image\" Target=\"../media/\(imgFilename)\"/>\n"
+
+                        let geomStr = (imageContent.frameKind == .circle) ? "ellipse" : (imageContent.cornerRadius > 0 ? "roundRect" : "rect")
+
+                        slideElementsXML += """
+                        <p:pic>
+                          <p:nvPicPr><p:cNvPr id="\(elemId)" name="\(escape(element.name))"/><p:cNvPicPr><a:picLocks noChangeAspect="1"/></p:cNvPicPr><p:nvPr/></p:nvPicPr>
+                          <p:blipFill><a:blip r:embed="\(rId)"/><a:stretch><a:fillRect/></a:stretch></p:blipFill>
+                          <p:spPr><a:xfrm><a:off x="\(ex)" y="\(ey)"/><a:ext cx="\(ew)" cy="\(eh)"/></a:xfrm><a:prstGeom prst="\(geomStr)"><a:avLst/></a:prstGeom></p:spPr>
+                        </p:pic>
+                        """
                     }
-
-                    slideRels += "  <Relationship Id=\"\(rId)\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/image\" Target=\"../media/\(imgFilename)\"/>\n"
-
-                    let geomStr = (imageContent.frameKind == .circle) ? "ellipse" : (imageContent.cornerRadius > 0 ? "roundRect" : "rect")
-
-                    slideElementsXML += """
-                    <p:pic>
-                      <p:nvPicPr><p:cNvPr id="\(elemId)" name="\(escape(element.name))"/><p:cNvPicPr><a:picLocks noChangeAspect="1"/></p:cNvPicPr><p:nvPr/></p:nvPicPr>
-                      <p:blipFill><a:blip r:embed="\(rId)"/><a:stretch><a:fillRect/></a:stretch></p:blipFill>
-                      <p:spPr><a:xfrm><a:off x="\(ex)" y="\(ey)"/><a:ext cx="\(ew)" cy="\(eh)"/></a:xfrm><a:prstGeom prst="\(geomStr)"><a:avLst/></a:prstGeom></p:spPr>
-                    </p:pic>
-                    """
 
                 case .shape(let shape):
                     let geomStr: String
@@ -533,27 +534,27 @@ public enum ExportEngine {
                     """
 
                 case .icon(let icon):
-                    globalImageIndex += 1
-                    slideRelCounter += 1
-                    let imgFilename = "image\(globalImageIndex).png"
-                    let rId = "rId\(slideRelCounter)"
-
+                    // Same dangling-rel guard as .image above.
+                    let imgFilename = "image\(globalImageIndex + 1).png"
                     if let iconImg = NSImage(systemSymbolName: icon.symbolName, accessibilityDescription: nil),
                        let tiff = iconImg.tiffRepresentation,
                        let bitmap = NSBitmapImageRep(data: tiff),
-                       let pngBytes = bitmap.representation(using: NSBitmapImageRep.FileType.png, properties: [:]) {
-                        try? pngBytes.write(to: mediaDir.appendingPathComponent(imgFilename))
+                       let pngBytes = bitmap.representation(using: NSBitmapImageRep.FileType.png, properties: [:]),
+                       (try? pngBytes.write(to: mediaDir.appendingPathComponent(imgFilename))) != nil {
+                        globalImageIndex += 1
+                        slideRelCounter += 1
+                        let rId = "rId\(slideRelCounter)"
+
+                        slideRels += "  <Relationship Id=\"\(rId)\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/image\" Target=\"../media/\(imgFilename)\"/>\n"
+
+                        slideElementsXML += """
+                        <p:pic>
+                          <p:nvPicPr><p:cNvPr id="\(elemId)" name="\(escape(element.name))"/><p:cNvPicPr><a:picLocks noChangeAspect="1"/></p:cNvPicPr><p:nvPr/></p:nvPicPr>
+                          <p:blipFill><a:blip r:embed="\(rId)"/><a:stretch><a:fillRect/></a:stretch></p:blipFill>
+                          <p:spPr><a:xfrm><a:off x="\(ex)" y="\(ey)"/><a:ext cx="\(ew)" cy="\(eh)"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr>
+                        </p:pic>
+                        """
                     }
-
-                    slideRels += "  <Relationship Id=\"\(rId)\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/image\" Target=\"../media/\(imgFilename)\"/>\n"
-
-                    slideElementsXML += """
-                    <p:pic>
-                      <p:nvPicPr><p:cNvPr id="\(elemId)" name="\(escape(element.name))"/><p:cNvPicPr><a:picLocks noChangeAspect="1"/></p:cNvPicPr><p:nvPr/></p:nvPicPr>
-                      <p:blipFill><a:blip r:embed="\(rId)"/><a:stretch><a:fillRect/></a:stretch></p:blipFill>
-                      <p:spPr><a:xfrm><a:off x="\(ex)" y="\(ey)"/><a:ext cx="\(ew)" cy="\(eh)"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr>
-                    </p:pic>
-                    """
 
                 case .drawing:
                     break
@@ -652,9 +653,17 @@ public enum ExportEngine {
 
     private static func drawFill(_ fill: FillStyle, in rect: CGRect, context: CGContext) {
         switch fill.type {
-        case .solid, .newsprint, .kraft, .vintageParchment, .graphPaper, .glass, .pattern:
+        case .solid, .newsprint, .kraft, .vintageParchment, .graphPaper, .glass:
             context.setFillColor(fill.solidColor.cgColor)
             context.fill(rect)
+
+        case .pattern:
+            context.setFillColor(fill.solidColor.cgColor)
+            context.fill(rect)
+            context.saveGState()
+            context.clip(to: rect)
+            PatternFillCG.draw(fill: fill, in: rect, context: context)
+            context.restoreGState()
 
         case .linearGradient:
             let colors = fill.gradientStops.map { $0.color.cgColor } as CFArray
@@ -688,11 +697,11 @@ public enum ExportEngine {
         case .shape(let shape):
             drawShape(shape, in: elemRect, context: context)
         case .text(let text):
-            drawText(text, in: elemRect)
+            drawText(text, in: elemRect, context: context)
         case .image(let imageContent):
             drawImage(imageContent, in: elemRect, context: context)
         case .icon(let icon):
-            drawIcon(icon, in: elemRect)
+            drawIcon(icon, in: elemRect, context: context)
         case .drawing(let drawing):
             drawDrawing(drawing, context: context)
         case .code(let codeContent):
@@ -718,28 +727,79 @@ public enum ExportEngine {
         }
     }
 
-    private static func drawText(_ text: TextContent, in rect: CGRect) {
-        let font = NSFont(name: text.fontFamily, size: CGFloat(text.fontSize))
-            ?? (text.fontWeight >= 700 ? NSFont.boldSystemFont(ofSize: CGFloat(text.fontSize)) : NSFont.systemFont(ofSize: CGFloat(text.fontSize)))
+    private static func drawText(_ text: TextContent, in rect: CGRect, context: CGContext) {
+        // Shared attribute pipeline (font cache, weight/italic/underline-aware)
+        // so exports match the canvas, editor, and importer exactly.
+        let attrs = TextMeasurement.attributes(for: text)
 
-        let paragraphStyle = NSMutableParagraphStyle()
-        switch text.alignment {
-        case .left: paragraphStyle.alignment = .left
-        case .center: paragraphStyle.alignment = .center
-        case .right: paragraphStyle.alignment = .right
-        case .justified: paragraphStyle.alignment = .justified
-        }
-        paragraphStyle.lineSpacing = CGFloat(text.lineSpacing)
-
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: font,
-            .foregroundColor: text.textColor.nsColor,
-            .paragraphStyle: paragraphStyle,
-            .kern: text.letterSpacing
-        ]
+        // Same content-area + vertical-anchor placement as the canvas (see
+        // TextBoxLayout), so thumbnails/exports match what's on screen.
+        let cardPad = text.cardBackground != nil ? CGFloat(text.cardPadding) : 0
+        let contentW = max(1, rect.width - CGFloat(text.insetLeft + text.insetRight) - cardPad * 2)
+        let areaH = max(0, rect.height - CGFloat(text.insetTop + text.insetBottom) - cardPad * 2)
 
         let attrStr = NSAttributedString(string: text.text, attributes: attrs)
-        attrStr.draw(in: rect)
+        // Lay out with TextKit — the same engine as TextMeasurement.blockHeight
+        // and the canvas NSTextView, so measured and drawn heights agree.
+        // (attrStr.draw(in:) lays out via NSStringDrawing, whose line metrics
+        // are looser than usedRect's — it clipped the last wrapped line
+        // whenever a box was sized tight.)
+        let storage = NSTextStorage(attributedString: attrStr)
+        let layoutManager = NSLayoutManager()
+        storage.addLayoutManager(layoutManager)
+        let container = NSTextContainer(size: NSSize(width: contentW, height: .greatestFiniteMagnitude))
+        container.lineFragmentPadding = 0
+        layoutManager.addTextContainer(container)
+        layoutManager.ensureLayout(for: container)
+        let contentH = layoutManager.usedRect(for: container).height
+        let runH = max(1, min(areaH, ceil(contentH)))
+        let slack = max(0, areaH - runH)
+        let anchorShift: CGFloat
+        switch text.verticalAnchor {
+        case .top: anchorShift = 0
+        case .center: anchorShift = slack / 2
+        case .bottom: anchorShift = slack
+        }
+
+        // The page context is y-up, so flip into top-left local coordinates
+        // (same pattern as drawCode): draw(in:) then anchors the run's visual
+        // top to drawRect.minY, exactly like the canvas. In the unflipped space
+        // insets/anchorShift must hang off rect.maxY, not rect.minY.
+        let drawRect = CGRect(
+            x: CGFloat(text.insetLeft) + cardPad,
+            y: CGFloat(text.insetTop) + cardPad + anchorShift,
+            width: contentW,
+            height: runH
+        )
+        // Sticky-note card behind the text (same as the canvas: full-rect
+        // rounded card + optional border), drawn in the unflipped page space.
+        if let bg = text.cardBackground {
+            let cardPath = CGPath(roundedRect: rect, cornerWidth: CGFloat(text.cardCornerRadius), cornerHeight: CGFloat(text.cardCornerRadius), transform: nil)
+            context.saveGState()
+            context.addPath(cardPath)
+            context.setFillColor(bg.cgColor)
+            context.fillPath()
+            if let border = text.cardBorderColor, text.cardBorderWidth > 0 {
+                context.addPath(cardPath)
+                context.setStrokeColor(border.cgColor)
+                context.setLineWidth(CGFloat(text.cardBorderWidth))
+                context.strokePath()
+            }
+            context.restoreGState()
+        }
+
+        context.saveGState()
+        context.translateBy(x: rect.minX, y: rect.maxY)
+        context.scaleBy(x: 1, y: -1)
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: true)
+        context.clip(to: drawRect)
+        layoutManager.drawGlyphs(
+            forGlyphRange: layoutManager.glyphRange(for: container),
+            at: drawRect.origin
+        )
+        NSGraphicsContext.restoreGraphicsState()
+        context.restoreGState()
     }
 
     private static func drawImage(_ imageContent: ImageContent, in rect: CGRect, context: CGContext) {
@@ -767,7 +827,7 @@ public enum ExportEngine {
         context.restoreGState()
     }
 
-    private static func drawIcon(_ icon: IconContent, in rect: CGRect) {
+    private static func drawIcon(_ icon: IconContent, in rect: CGRect, context: CGContext) {
         guard let img = NSImage(systemSymbolName: icon.symbolName, accessibilityDescription: nil) else { return }
         let tinted = NSImage(size: img.size, flipped: false) { bounds in
             img.draw(in: bounds)
@@ -775,7 +835,12 @@ public enum ExportEngine {
             bounds.fill(using: .sourceAtop)
             return true
         }
+        // Set the context explicitly — PDF export has no ambient one, so icons
+        // would otherwise silently drop from the output.
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: false)
         tinted.draw(in: rect)
+        NSGraphicsContext.restoreGraphicsState()
     }
 
     private static func drawDrawing(_ drawing: DrawingContent, context: CGContext) {
@@ -797,43 +862,108 @@ public enum ExportEngine {
 
     private static func drawCode(_ codeContent: CodeContent, in rect: CGRect, context: CGContext) {
         let cardRect = rect
+        let corner = CGFloat(codeContent.cornerRadius)
+
+        // Card background (drawn in the unflipped page space)
         context.saveGState()
-        let path = CGPath(roundedRect: cardRect, cornerWidth: 10, cornerHeight: 10, transform: nil)
+        let path = CGPath(roundedRect: cardRect, cornerWidth: corner, cornerHeight: corner, transform: nil)
         context.addPath(path)
         context.setFillColor(codeContent.theme.backgroundColor.cgColor)
         context.fillPath()
-
-        if codeContent.showWindowHeader {
-            let dotY = cardRect.origin.y + 14
-            let dotRadius: CGFloat = 5
-            let redDot = CGRect(x: cardRect.origin.x + 14, y: dotY - dotRadius, width: dotRadius * 2, height: dotRadius * 2)
-            let yellowDot = CGRect(x: cardRect.origin.x + 28, y: dotY - dotRadius, width: dotRadius * 2, height: dotRadius * 2)
-            let greenDot = CGRect(x: cardRect.origin.x + 42, y: dotY - dotRadius, width: dotRadius * 2, height: dotRadius * 2)
-
-            context.setFillColor(NSColor.systemRed.cgColor)
-            context.fillEllipse(in: redDot)
-            context.setFillColor(NSColor.systemYellow.cgColor)
-            context.fillEllipse(in: yellowDot)
-            context.setFillColor(NSColor.systemGreen.cgColor)
-            context.fillEllipse(in: greenDot)
-        }
         context.restoreGState()
 
-        let startY = cardRect.origin.y + (codeContent.showWindowHeader ? 36 : 14)
-        let lines = codeContent.code.components(separatedBy: CharacterSet.newlines)
-        let font = NSFont.monospacedSystemFont(ofSize: CGFloat(codeContent.fontSize), weight: .regular)
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: font,
-            .foregroundColor: codeContent.theme.defaultTextColor.nsColor
-        ]
+        // Flip into top-left local coordinates so the window chrome and code
+        // lines lay out top-down exactly like the on-canvas SwiftUI view.
+        context.saveGState()
+        context.translateBy(x: cardRect.minX, y: cardRect.maxY)
+        context.scaleBy(x: 1, y: -1)
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: true)
 
-        var curY = startY
-        for line in lines {
-            let attrStr = NSAttributedString(string: line, attributes: attrs)
-            attrStr.draw(at: CGPoint(x: cardRect.origin.x + 16, y: curY))
-            curY += CGFloat(codeContent.fontSize) * 1.4
-            if curY > cardRect.origin.y + cardRect.height { break }
+        let local = CGRect(x: 0, y: 0, width: cardRect.width, height: cardRect.height)
+        context.saveGState()
+        context.addPath(CGPath(roundedRect: local, cornerWidth: corner, cornerHeight: corner, transform: nil))
+        context.clip()
+
+        let headerH: CGFloat = codeContent.showWindowHeader ? 30 : 0
+        let pad = CGFloat(codeContent.padding)
+        let fontSize = CGFloat(codeContent.fontSize)
+        let mono = NSFont.monospacedSystemFont(ofSize: fontSize, weight: .medium)
+
+        if codeContent.showWindowHeader {
+            // Header band + separator
+            context.setFillColor(codeContent.theme.backgroundColor.cgColor)
+            context.fill(CGRect(x: 0, y: 0, width: local.width, height: headerH))
+            context.setFillColor(NSColor.white.withAlphaComponent(0.08).cgColor)
+            context.fill(CGRect(x: 0, y: headerH - 1, width: local.width, height: 1))
+
+            // Traffic lights
+            let dotR: CGFloat = 5
+            let dotY = headerH / 2 - dotR
+            for (i, c) in [NSColor.systemRed, NSColor.systemYellow, NSColor.systemGreen].enumerated() {
+                context.setFillColor(c.cgColor)
+                context.fillEllipse(in: CGRect(x: 12 + CGFloat(i) * 16, y: dotY, width: dotR * 2, height: dotR * 2))
+            }
+
+            // Window title, centered
+            let title = codeContent.windowTitle.isEmpty ? "snippet.\(codeContent.language.fileExtension)" : codeContent.windowTitle
+            let titleAttrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .medium),
+                .foregroundColor: codeContent.theme.commentColor.nsColor
+            ]
+            let t = NSAttributedString(string: title, attributes: titleAttrs)
+            let tSize = t.size()
+            t.draw(at: CGPoint(x: (local.width - tSize.width) / 2, y: (headerH - tSize.height) / 2))
+
+            // Language badge, right-aligned
+            let badgeAttrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.monospacedSystemFont(ofSize: 8.5, weight: .bold),
+                .foregroundColor: codeContent.theme.keywordColor.nsColor
+            ]
+            let badge = NSAttributedString(string: codeContent.language.rawValue.uppercased(), attributes: badgeAttrs)
+            badge.draw(at: CGPoint(x: local.width - badge.size().width - 12, y: (headerH - badge.size().height) / 2))
         }
+
+        // Syntax-highlighted code lines (same highlighter as the canvas view)
+        let lines = CodeHighlighter.highlight(code: codeContent.code, language: codeContent.language, theme: codeContent.theme)
+        let digitCount = max(2, String(max(1, lines.count)).count)
+        let gutterW = codeContent.showLineNumbers
+            ? max(28, CGFloat(digitCount) * fontSize * 0.65 + 8)
+            : 0
+        let lineH = fontSize * 1.35 + 3
+        var curY = headerH + pad
+        let maxY = local.height - pad * 0.5
+
+        for line in lines {
+            if curY + lineH > maxY { break }
+            var x = pad
+
+            if codeContent.showLineNumbers {
+                let numAttrs: [NSAttributedString.Key: Any] = [
+                    .font: mono,
+                    .foregroundColor: codeContent.theme.commentColor.nsColor.withAlphaComponent(0.55)
+                ]
+                let num = NSAttributedString(string: "\(line.lineNumber)", attributes: numAttrs)
+                num.draw(at: CGPoint(x: pad + gutterW - num.size().width, y: curY))
+            }
+            x += gutterW + (codeContent.showLineNumbers ? 10 : 0)
+
+            for token in line.tokens {
+                let attrs: [NSAttributedString.Key: Any] = [
+                    .font: mono,
+                    .foregroundColor: NSColor(token.color)
+                ]
+                let s = NSAttributedString(string: token.text, attributes: attrs)
+                s.draw(at: CGPoint(x: x, y: curY))
+                x += s.size().width
+                if x > local.width - pad { break }
+            }
+            curY += lineH
+        }
+
+        context.restoreGState()
+        NSGraphicsContext.restoreGraphicsState()
+        context.restoreGState()
     }
 
     private static func svgLinearGradientDef(id: String, fill: FillStyle) -> String {
@@ -875,10 +1005,30 @@ public enum ExportEngine {
             }
 
         case .text(let text):
+            // Respect internal insets + vertical anchor (SVG is y-down like the
+            // canvas, so offsets hang off elem.y directly).
+            let cardPad = text.cardBackground != nil ? text.cardPadding : 0
+            let areaH = max(0, elem.height - text.insetTop - text.insetBottom - cardPad * 2)
+            let contentH = TextMeasurement.contentHeight(for: text, boxWidth: elem.width)
+            let slack = max(0, areaH - min(areaH, contentH))
+            let anchorShift = text.verticalAnchor == .center ? slack / 2 : (text.verticalAnchor == .bottom ? slack : 0)
             let anchor = text.alignment == .center ? "text-anchor=\"middle\"" : (text.alignment == .right ? "text-anchor=\"end\"" : "")
-            let tx = text.alignment == .center ? elem.center.x : (text.alignment == .right ? elem.x + elem.width : elem.x)
-            let ty = elem.y + text.fontSize
-            return "<text x=\"\(tx)\" y=\"\(ty)\" font-family=\"\(text.fontFamily)\" font-size=\"\(text.fontSize)\" font-weight=\"\(Int(text.fontWeight))\" fill=\"\(text.textColor.hexString)\" \(anchor)\(opacity)\(transform)>\(text.text)</text>\n"
+            let tx = text.alignment == .center ? elem.center.x
+                : (text.alignment == .right ? elem.x + elem.width - text.insetRight - cardPad
+                : elem.x + text.insetLeft + cardPad)
+            let ty = elem.y + text.insetTop + cardPad + anchorShift + text.fontSize
+            var out = ""
+            if let bg = text.cardBackground {
+                let border = (text.cardBorderColor != nil && text.cardBorderWidth > 0)
+                    ? " stroke=\"\(text.cardBorderColor!.hexString)\" stroke-width=\"\(text.cardBorderWidth)\"" : ""
+                out += "<rect x=\"\(elem.x)\" y=\"\(elem.y)\" width=\"\(elem.width)\" height=\"\(elem.height)\" rx=\"\(text.cardCornerRadius)\" fill=\"\(bg.hexString)\"\(border)\(opacity)\(transform) />\n"
+            }
+            let escaped = text.text
+                .replacingOccurrences(of: "&", with: "&amp;")
+                .replacingOccurrences(of: "<", with: "&lt;")
+                .replacingOccurrences(of: ">", with: "&gt;")
+            out += "<text x=\"\(tx)\" y=\"\(ty)\" font-family=\"\(text.fontFamily)\" font-size=\"\(text.fontSize)\" font-weight=\"\(Int(text.fontWeight))\" fill=\"\(text.textColor.hexString)\" \(anchor)\(opacity)\(transform)>\(escaped)</text>\n"
+            return out
 
         default:
             return ""

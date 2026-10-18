@@ -54,7 +54,8 @@ public struct CanvasViewportView: View {
         GeometryReader { geometry in
             // Canva-style bottom rail reserve: presentation & document pages float in the
             // space ABOVE the filmstrip so page and page-switcher never overlap.
-            let filmstripVisible = viewModel.pageLayoutMode != .infiniteWhiteboard && viewModel.project.pages.count > 1
+            // Always on outside whiteboard mode: it is also where zoom lives (Canva-style).
+            let filmstripVisible = viewModel.pageLayoutMode != .infiniteWhiteboard
             let bottomReserved: CGFloat = filmstripVisible ? 108 : 0
             ZStack {
                 // 1. Dynamic Workspace Backdrop (visual only)
@@ -249,10 +250,11 @@ public struct CanvasViewportView: View {
                     VStack {
                         Spacer()
                         HStack(spacing: 8) {
-                            Image(systemName: "sparkles")
-                                .foregroundColor(Color(hex: "#D97706"))
+                            Image(systemName: viewModel.toastIsError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                                .foregroundColor(viewModel.toastIsError ? PlumaTheme.danger : PlumaTheme.success)
                             Text(viewModel.toastMessage)
-                                .font(.system(size: 12.5, weight: .semibold, design: .serif))
+                                .font(PlumaTheme.label(12.5, weight: .medium))
+                                .lineLimit(2)
                         }
                         .padding(.horizontal, 16)
                         .padding(.vertical, 9)
@@ -260,7 +262,7 @@ public struct CanvasViewportView: View {
                         .clipShape(Capsule())
                         .overlay(Capsule().stroke(Color.secondary.opacity(0.2), lineWidth: 1))
                         .shadow(color: .black.opacity(0.15), radius: 8, x: 0, y: 4)
-                        .padding(.bottom, 65)
+                        .padding(.bottom, filmstripVisible ? bottomReserved + 12 : 65)
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                     }
                     .allowsHitTesting(false)
@@ -268,6 +270,11 @@ public struct CanvasViewportView: View {
                 }
             }
             .clipped()
+            // `.clipped()` only clips drawing, not hit testing: zoomed-in artboards
+            // overflowing the viewport stayed clickable outside it and swallowed
+            // every click on the sidebar, toolbar and inspector. The content shape
+            // limits hit testing to the viewport's own rect.
+            .contentShape(Rectangle())
             .onAppear {
                 initialZoomScale = viewModel.zoomScale
                 viewModel.bottomInset = bottomReserved
@@ -294,7 +301,7 @@ public struct CanvasViewportView: View {
             }
             .onChange(of: viewModel.project.pages.count) { _, newCount in
                 // Bottom rail appeared/disappeared → refit so the page clears it
-                let visible = viewModel.pageLayoutMode != .infiniteWhiteboard && newCount > 1
+                let visible = viewModel.pageLayoutMode != .infiniteWhiteboard
                 if visible != filmstripWasVisible {
                     filmstripWasVisible = visible
                     viewModel.bottomInset = visible ? 108 : 0
@@ -304,7 +311,7 @@ public struct CanvasViewportView: View {
             .onChange(of: viewModel.pageLayoutMode) { _, newMode in
                 // Template/preset swaps can flip the layout (A4 ↔ presentation ↔ board):
                 // re-reserve the rail and refit for the new geometry.
-                let visible = newMode != .infiniteWhiteboard && viewModel.project.pages.count > 1
+                let visible = newMode != .infiniteWhiteboard
                 filmstripWasVisible = visible
                 viewModel.bottomInset = visible ? 108 : 0
                 viewModel.zoomToFit(viewportSize: geometry.size)
@@ -356,12 +363,13 @@ public struct CanvasViewportView: View {
                         height: abs(currentCanvas.y - startCanvas.y)
                     )
                     let intersecting = viewModel.currentPage.elements.filter {
-                        $0.isVisible && $0.rotatedCanvasBounds.intersects(rect)
+                        $0.isVisible && !$0.isLocked && $0.rotatedCanvasBounds.intersects(rect)
                     }
+                    let hitIds = Set(intersecting.map { $0.id })
                     if NSEvent.modifierFlags.contains(.shift) {
-                        viewModel.selectedElementIds.formUnion(intersecting.map { $0.id })
+                        viewModel.selectedElementIds.formUnion(viewModel.expandSelectionForGroups(hitIds))
                     } else {
-                        viewModel.selectedElementIds = Set(intersecting.map { $0.id })
+                        viewModel.selectedElementIds = viewModel.expandSelectionForGroups(hitIds)
                     }
                 }
             }
@@ -432,50 +440,16 @@ public struct CanvasViewportView: View {
             // elements outside the visible region (plus margin) are skipped entirely.
             let cullRect = viewModel.visibleCanvasRect(viewportSize: viewModel.lastViewportSize)
                 .insetBy(dx: -600, dy: -600)
-            ForEach(page.elements.sorted(by: { $0.zIndex < $1.zIndex })) { element in
+            ForEach(viewModel.zOrderedElements(of: page)) { element in
                 if element.isVisible && element.rotatedCanvasBounds.intersects(cullRect) {
-                    ElementRendererView(
+                    EquatableElementRenderer(
+                        viewModel: viewModel,
                         element: element,
                         isEditingText: (viewModel.editingTextElementId == element.id),
                         isEditingCode: (viewModel.editingCodeElementId == element.id),
-                        onUpdateText: { newText in
-                            viewModel.updateElement(id: element.id) { elem in
-                                if case .text(var t) = elem.payload {
-                                    t.text = newText
-                                    elem.payload = .text(t)
-                                }
-                            }
-                        },
-                        onCommitText: {
-                            viewModel.editingTextElementId = nil
-                        },
-                        onUpdateCode: { newCode in
-                            viewModel.updateElement(id: element.id) { elem in
-                                if case .code(var c) = elem.payload {
-                                    c.code = newCode
-                                    elem.payload = .code(c)
-                                    elem.height = CanvasDocumentViewModel.calculateCodeBlockHeight(for: c)
-                                }
-                            }
-                        },
-                        onUpdateLanguage: { newLang in
-                            viewModel.updateElement(id: element.id) { elem in
-                                if case .code(var c) = elem.payload {
-                                    c.language = newLang
-                                    c.windowTitle = "snippet.\(newLang.fileExtension)"
-                                    elem.payload = .code(c)
-                                }
-                            }
-                        },
-                        onUpdateTheme: { newTheme in
-                            viewModel.updateElement(id: element.id) { elem in
-                                if case .code(var c) = elem.payload {
-                                    c.theme = newTheme
-                                    elem.payload = .code(c)
-                                }
-                            }
-                        }
+                        isLiveTransforming: viewModel.isLiveTransforming
                     )
+                    .equatable()
                     .position(x: element.x + element.width / 2.0, y: element.y + element.height / 2.0)
                     .contextMenu {
                         elementContextMenu(for: element)
@@ -541,6 +515,9 @@ public struct CanvasViewportView: View {
                                 viewModel.endDrag()
                             }
                     )
+                    // Locked = click-through (Figma model): a locked full-page background
+                    // must not swallow clicks, marquees and drags. Unlock via Layers or ⌘L.
+                    .allowsHitTesting(!element.isLocked)
                 }
             }
 
@@ -548,12 +525,30 @@ public struct CanvasViewportView: View {
             // & self-rotates; NO extra .rotationEffect/.position here or the transformer
             // detaches from the object.
             if viewModel.activeTool == .select && !isHandOrPanMode && viewModel.editingTextElementId == nil && viewModel.editingCodeElementId == nil {
-                ForEach(viewModel.selectedElements) { selectedElement in
-                    SelectionOverlayView(
+                if viewModel.selectedElements.count > 1 {
+                    // Multi-select / group: light member outlines + ONE collective
+                    // transform box so composite objects (browser windows, device
+                    // frames) scale & rotate as a single unit.
+                    ForEach(viewModel.selectedElements) { member in
+                        Rectangle()
+                            .stroke(Color(hex: "#C2410C").opacity(0.55), lineWidth: 1 / max(0.5, viewModel.zoomScale))
+                            .frame(width: member.width, height: member.height)
+                            .rotationEffect(.degrees(member.rotation))
+                            .position(x: member.x + member.width / 2, y: member.y + member.height / 2)
+                            .allowsHitTesting(false)
+                    }
+                    GroupSelectionOverlayView(
                         viewModel: viewModel,
-                        element: selectedElement,
                         coordinateSpaceName: "canvasSpace_\(pageIndex)"
                     )
+                } else {
+                    ForEach(viewModel.selectedElements) { selectedElement in
+                        SelectionOverlayView(
+                            viewModel: viewModel,
+                            element: selectedElement,
+                            coordinateSpaceName: "canvasSpace_\(pageIndex)"
+                        )
+                    }
                 }
             }
 
@@ -587,12 +582,13 @@ public struct CanvasViewportView: View {
                             width: abs(value.location.x - value.startLocation.x),
                             height: abs(value.location.y - value.startLocation.y)
                         )
-                        let intersecting = viewModel.currentPage.elements.filter { $0.isVisible && $0.rotatedCanvasBounds.intersects(rect) }
+                        let intersecting = viewModel.currentPage.elements.filter { $0.isVisible && !$0.isLocked && $0.rotatedCanvasBounds.intersects(rect) }
+                        let hitIds = Set(intersecting.map { $0.id })
                         let isShiftPressed = NSEvent.modifierFlags.contains(.shift)
                         if isShiftPressed {
-                            viewModel.selectedElementIds.formUnion(intersecting.map { $0.id })
+                            viewModel.selectedElementIds.formUnion(viewModel.expandSelectionForGroups(hitIds))
                         } else {
-                            viewModel.selectedElementIds = Set(intersecting.map { $0.id })
+                            viewModel.selectedElementIds = viewModel.expandSelectionForGroups(hitIds)
                         }
                     }
                 }
@@ -613,8 +609,7 @@ public struct CanvasViewportView: View {
             ForEach(Array(viewModel.project.pages.enumerated()), id: \.element.id) { index, page in
                 VStack(spacing: 10) {
                     // Page Header Bar with Quick Action Pills
-                    pageHeaderActionBar(index: index, page: page)
-                        .frame(width: page.width)
+                    zoomInvariantPageHeader(index: index, page: page)
 
                     // Page Sheet Surface & Elements
                     pageArtboardSurfaceView(pageIndex: index, page: page)
@@ -654,8 +649,7 @@ public struct CanvasViewportView: View {
         let index = viewModel.activePageIndex
 
         return VStack(spacing: 10) {
-            pageHeaderActionBar(index: index, page: page)
-                .frame(width: page.width)
+            zoomInvariantPageHeader(index: index, page: page)
 
             pageArtboardSurfaceView(pageIndex: index, page: page)
         }
@@ -663,27 +657,46 @@ public struct CanvasViewportView: View {
 
     // MARK: - Page Header Action Bar
 
+    /// The header lives inside the zoomed artboard stack, so at fit zoom (~50%)
+    /// its labels used to render at ~5pt. Lay it out at screen size and undo the
+    /// stack's zoom, keeping text and hit targets at a constant on-screen size.
+    /// The layout slot stays the original page-unit height; when zoomed out the
+    /// header simply grows upward into the margin above the page.
+    private func zoomInvariantPageHeader(index: Int, page: CanvasPage) -> some View {
+        let z = max(0.05, viewModel.zoomScale)
+        return pageHeaderActionBar(index: index, page: page)
+            .frame(width: page.width * z, height: 26)
+            .scaleEffect(1 / z, anchor: .bottomLeading)
+            .frame(width: page.width, height: 22, alignment: .bottomLeading)
+    }
+
     private func pageHeaderActionBar(index: Int, page: CanvasPage) -> some View {
         let isCurrent = viewModel.activePageIndex == index
 
         return HStack {
             HStack(spacing: 8) {
                 Text("Page \(index + 1)")
-                    .font(.system(size: 11.5, weight: .bold, design: .monospaced))
-                    .foregroundColor(isCurrent ? Color(hex: "#C2410C") : .secondary)
+                    .font(PlumaTheme.label(11, weight: .semibold))
+                    .foregroundColor(isCurrent ? PlumaTheme.accentOnSoft : .secondary)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 3)
-                    .background(isCurrent ? Color(hex: "#C2410C").opacity(0.12) : Color.secondary.opacity(0.08))
+                    .background(isCurrent ? PlumaTheme.accentSoft : PlumaTheme.control)
                     .clipShape(Capsule())
 
-                Text(page.name)
-                    .font(.system(size: 12, weight: isCurrent ? .bold : .medium, design: .serif))
-                    .foregroundColor(isCurrent ? .primary : .secondary)
+                // Default names ("Page 3") would just repeat the badge.
+                if !page.name.isEmpty && page.name != "Page \(index + 1)" {
+                    Text(page.name)
+                        .font(PlumaTheme.label(12, weight: isCurrent ? .semibold : .regular))
+                        .foregroundColor(isCurrent ? .primary : .secondary)
+                }
 
-                Text("•  \(Int(page.width)) × \(Int(page.height)) px")
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundColor(.secondary.opacity(0.8))
+                Text("\(Int(page.width)) × \(Int(page.height))")
+                    .font(PlumaTheme.numeric(10.5, weight: .regular))
+                    .foregroundColor(.secondary)
             }
+            .lineLimit(1)
+            .contentShape(Rectangle())
+            .onTapGesture { viewModel.activePageIndex = index }
 
             Spacer()
 
@@ -711,17 +724,12 @@ public struct CanvasViewportView: View {
                 }
 
                 Button(action: { viewModel.duplicatePage(at: index) }) {
-                    HStack(spacing: 4) {
-                        Image(systemName: "plus.square.on.square")
-                            .font(.system(size: 10))
-                        Text("Duplicate")
-                            .font(.system(size: 10.5, weight: .semibold, design: .serif))
-                    }
-                    .foregroundColor(.secondary)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 5)
+                    Image(systemName: "plus.square.on.square")
+                        .font(.system(size: 10.5))
+                        .foregroundColor(.secondary)
+                        .frame(width: 22, height: 22)
                 }
-                .buttonStyle(HoverPillButtonStyle(cornerRadius: 6, tint: .secondary))
+                .buttonStyle(CircleHoverButtonStyle(side: 22))
                 .help("Duplicate Page")
 
                 if viewModel.project.pages.count > 1 {
@@ -764,50 +772,16 @@ public struct CanvasViewportView: View {
 
             // Elements Layer
             ZStack {
-                ForEach(page.elements.sorted(by: { $0.zIndex < $1.zIndex })) { element in
+                ForEach(viewModel.zOrderedElements(of: page)) { element in
                     if element.isVisible {
-                        ElementRendererView(
+                        EquatableElementRenderer(
+                            viewModel: viewModel,
                             element: element,
                             isEditingText: isCurrentPage && (viewModel.editingTextElementId == element.id),
                             isEditingCode: isCurrentPage && (viewModel.editingCodeElementId == element.id),
-                            onUpdateText: { newText in
-                                viewModel.updateElement(id: element.id) { elem in
-                                    if case .text(var t) = elem.payload {
-                                        t.text = newText
-                                        elem.payload = .text(t)
-                                    }
-                                }
-                            },
-                            onCommitText: {
-                                viewModel.editingTextElementId = nil
-                            },
-                            onUpdateCode: { newCode in
-                                viewModel.updateElement(id: element.id) { elem in
-                                    if case .code(var c) = elem.payload {
-                                        c.code = newCode
-                                        elem.payload = .code(c)
-                                        elem.height = CanvasDocumentViewModel.calculateCodeBlockHeight(for: c)
-                                    }
-                                }
-                            },
-                            onUpdateLanguage: { newLang in
-                                viewModel.updateElement(id: element.id) { elem in
-                                    if case .code(var c) = elem.payload {
-                                        c.language = newLang
-                                        c.windowTitle = "snippet.\(newLang.fileExtension)"
-                                        elem.payload = .code(c)
-                                    }
-                                }
-                            },
-                            onUpdateTheme: { newTheme in
-                                viewModel.updateElement(id: element.id) { elem in
-                                    if case .code(var c) = elem.payload {
-                                        c.theme = newTheme
-                                        elem.payload = .code(c)
-                                    }
-                                }
-                            }
+                            isLiveTransforming: viewModel.isLiveTransforming
                         )
+                        .equatable()
                         .position(x: element.x + element.width / 2.0, y: element.y + element.height / 2.0)
                         .contextMenu {
                             elementContextMenu(for: element)
@@ -876,6 +850,9 @@ public struct CanvasViewportView: View {
                                     viewModel.endDrag()
                                 }
                         )
+                        // Locked = click-through (Figma model): a locked full-page background
+                        // must not swallow clicks, marquees and drags. Unlock via Layers or ⌘L.
+                        .allowsHitTesting(!element.isLocked)
                     }
                 }
             }
@@ -907,12 +884,27 @@ public struct CanvasViewportView: View {
 
             // Selection Overlays — see note above: NO extra transform here.
             if isCurrentPage && viewModel.activeTool == .select && !isHandOrPanMode && viewModel.editingTextElementId == nil && viewModel.editingCodeElementId == nil {
-                ForEach(viewModel.selectedElements) { selectedElement in
-                    SelectionOverlayView(
+                if viewModel.selectedElements.count > 1 {
+                    ForEach(viewModel.selectedElements) { member in
+                        Rectangle()
+                            .stroke(Color(hex: "#C2410C").opacity(0.55), lineWidth: 1 / max(0.5, viewModel.zoomScale))
+                            .frame(width: member.width, height: member.height)
+                            .rotationEffect(.degrees(member.rotation))
+                            .position(x: member.x + member.width / 2, y: member.y + member.height / 2)
+                            .allowsHitTesting(false)
+                    }
+                    GroupSelectionOverlayView(
                         viewModel: viewModel,
-                        element: selectedElement,
                         coordinateSpaceName: "canvasSpace_\(pageIndex)"
                     )
+                } else {
+                    ForEach(viewModel.selectedElements) { selectedElement in
+                        SelectionOverlayView(
+                            viewModel: viewModel,
+                            element: selectedElement,
+                            coordinateSpaceName: "canvasSpace_\(pageIndex)"
+                        )
+                    }
                 }
             }
 
@@ -962,12 +954,13 @@ public struct CanvasViewportView: View {
                             width: abs(value.location.x - value.startLocation.x),
                             height: abs(value.location.y - value.startLocation.y)
                         )
-                        let intersecting = viewModel.currentPage.elements.filter { $0.isVisible && $0.rotatedCanvasBounds.intersects(rect) }
+                        let intersecting = viewModel.currentPage.elements.filter { $0.isVisible && !$0.isLocked && $0.rotatedCanvasBounds.intersects(rect) }
+                        let hitIds = Set(intersecting.map { $0.id })
                         let isShiftPressed = NSEvent.modifierFlags.contains(.shift)
                         if isShiftPressed {
-                            viewModel.selectedElementIds.formUnion(intersecting.map { $0.id })
+                            viewModel.selectedElementIds.formUnion(viewModel.expandSelectionForGroups(hitIds))
                         } else {
-                            viewModel.selectedElementIds = Set(intersecting.map { $0.id })
+                            viewModel.selectedElementIds = viewModel.expandSelectionForGroups(hitIds)
                         }
                     }
                 }
@@ -1034,7 +1027,7 @@ public struct CanvasViewportView: View {
                     Image(systemName: "plus")
                         .font(.system(size: 10, weight: .bold))
                     Text("Page")
-                        .font(.system(size: 11, weight: .bold, design: .serif))
+                        .font(.system(size: 11, weight: .bold))
                 }
                 .padding(.horizontal, 9)
                 .padding(.vertical, 6)
@@ -1124,6 +1117,23 @@ public struct CanvasViewportView: View {
                             filmstripThumbnail(page: page, index: idx, isActive: viewModel.activePageIndex == idx)
                                 .id(idx)
                         }
+
+                        Button(action: {
+                            withAnimation(.easeInOut(duration: 0.2)) { viewModel.addPage() }
+                        }) {
+                            Image(systemName: "plus")
+                                .font(.system(size: 14, weight: .medium))
+                                .foregroundColor(.secondary)
+                                .frame(width: 54, height: 54)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 6)
+                                        .strokeBorder(Color.secondary.opacity(0.35), style: SwiftUI.StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                                )
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .hoverHighlight(cornerRadius: 6)
+                        .help("Add Page")
                     }
                     .padding(.horizontal, 6)
                     .padding(.vertical, 6)
@@ -1139,36 +1149,53 @@ public struct CanvasViewportView: View {
                 .frame(height: 40)
 
             // Zoom optics
-            HStack(spacing: 8) {
+            HStack(spacing: 6) {
                 Button(action: { viewModel.zoomOut() }) {
                     Image(systemName: "minus")
-                        .font(.system(size: 11, weight: .bold))
+                        .font(.system(size: 10, weight: .bold))
                         .frame(width: 24, height: 24)
                 }
                 .buttonStyle(CircleHoverButtonStyle(side: 24))
-                .help("Zoom Out")
+                .help("Zoom Out (⌘−)")
 
                 Slider(
                     value: Binding(
-                        get: { viewModel.zoomScale },
-                        set: { viewModel.zoomScale = $0 }
+                        get: { min(3.0, max(0.15, viewModel.zoomScale)) },
+                        set: { viewModel.setZoom($0) }
                     ),
                     in: 0.15...3.0
                 )
-                .frame(width: 76)
+                .frame(width: 84)
                 .controlSize(.mini)
+                .tint(PlumaTheme.accent)
 
                 Button(action: { viewModel.zoomIn() }) {
                     Image(systemName: "plus")
-                        .font(.system(size: 11, weight: .bold))
+                        .font(.system(size: 10, weight: .bold))
                         .frame(width: 24, height: 24)
                 }
                 .buttonStyle(CircleHoverButtonStyle(side: 24))
-                .help("Zoom In")
+                .help("Zoom In (⌘+)")
 
-                Text("\(Int(viewModel.zoomScale * 100))%")
-                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                    .frame(width: 38)
+                Menu {
+                    Button("Fit Page") { viewModel.zoomToFit(viewportSize: viewModel.lastViewportSize) }
+                    Button("Zoom to Selection  F") { viewModel.zoomToSelection(viewportSize: viewModel.lastViewportSize) }
+                    Button("Actual Size  ⌘0") { viewModel.zoomTo100() }
+                    Divider()
+                    ForEach([0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0], id: \.self) { level in
+                        Button("\(Int(level * 100))%") { viewModel.setZoom(level) }
+                    }
+                } label: {
+                    Text("\(Int((viewModel.zoomScale * 100).rounded()))%")
+                        .font(PlumaTheme.numeric(11, weight: .semibold))
+                        .lineLimit(1)
+                        .fixedSize()
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .frame(width: 42)
+                .help("Zoom presets")
 
                 Button(action: { viewModel.zoomToFit(viewportSize: viewModel.lastViewportSize) }) {
                     Image(systemName: "arrow.up.left.and.arrow.down.right")
@@ -1176,12 +1203,12 @@ public struct CanvasViewportView: View {
                         .frame(width: 24, height: 24)
                 }
                 .buttonStyle(CircleHoverButtonStyle(side: 24))
-                .help("Fit to Screen")
+                .help("Fit Page")
 
                 Button(action: { withAnimation(.easeInOut(duration: 0.15)) { viewModel.showRulers.toggle() } }) {
                     Image(systemName: "ruler")
                         .font(.system(size: 10, weight: .medium))
-                        .foregroundColor(viewModel.showRulers ? Color(hex: "#C2410C") : .primary)
+                        .foregroundColor(viewModel.showRulers ? .white : .primary)
                         .frame(width: 24, height: 24)
                 }
                 .buttonStyle(CircleHoverButtonStyle(side: 24, isSelected: viewModel.showRulers))
@@ -1199,7 +1226,22 @@ public struct CanvasViewportView: View {
     private func filmstripThumbnail(page: CanvasPage, index: Int, isActive: Bool) -> some View {
         ZStack(alignment: .bottomLeading) {
             Group {
-                if let thumb = PageThumbnailService.shared.thumbnail(for: page, targetWidth: 128) {
+                // During a live resize/drag/rotate the page fingerprint changes
+                // every tick — a synchronous render here would re-rasterize the
+                // whole page on the main thread per frame (the text-box lag).
+                // Show the cached frame instead; it refreshes on commit.
+                if viewModel.isLiveTransforming {
+                    if let thumb = PageThumbnailService.shared.thumbnailIfCached(for: page, targetWidth: 128) {
+                        Image(nsImage: thumb)
+                            .resizable()
+                            .aspectRatio(contentMode: .fit)
+                            .frame(width: 96, height: 54)
+                    } else {
+                        Rectangle()
+                            .fill(Color.secondary.opacity(0.08))
+                            .frame(width: 96, height: 54)
+                    }
+                } else if let thumb = PageThumbnailService.shared.thumbnail(for: page, targetWidth: 128) {
                     Image(nsImage: thumb)
                         .resizable()
                         .aspectRatio(contentMode: .fit)
@@ -1213,7 +1255,7 @@ public struct CanvasViewportView: View {
             .clipShape(RoundedRectangle(cornerRadius: 6))
             .overlay(
                 RoundedRectangle(cornerRadius: 6)
-                    .stroke(isActive ? Color(hex: "#C2410C") : Color.black.opacity(0.12), lineWidth: isActive ? 2 : 1)
+                    .stroke(isActive ? PlumaTheme.accent : PlumaTheme.hairline, lineWidth: isActive ? 2 : 1)
             )
             .shadow(color: isActive ? Color(hex: "#C2410C").opacity(0.25) : .clear, radius: 4, x: 0, y: 2)
 
@@ -1445,67 +1487,102 @@ public struct CanvasViewportView: View {
                     Gradient.Stop(color: $0.color.color, location: CGFloat($0.location))
                 })
                 Rectangle().fill(RadialGradient(gradient: gradient, center: .center, startRadius: 0, endRadius: max(page.width, page.height) / 1.5))
-            case .glass, .pattern:
+            case .glass:
                 Rectangle().fill(page.background.solidColor.color)
+            case .pattern:
+                Rectangle().fill(page.background.solidColor.color)
+                    .overlay(PatternFillView(fill: page.background))
             }
         }
     }
 
     // MARK: - Element Context Menu
 
+    /// Right-click doesn't run the tap gesture, so the clicked element's page may
+    /// not be active (continuous mode) and it may not be selected. Activate its
+    /// page and select it — but keep an existing multi-selection that already
+    /// contains it, so "Delete" on one of several selected items deletes them all.
+    private func prepareContextTarget(_ element: CanvasElement) {
+        if let pageIdx = viewModel.project.pages.firstIndex(where: { $0.elements.contains(where: { $0.id == element.id }) }),
+           pageIdx != viewModel.activePageIndex {
+            viewModel.activePageIndex = pageIdx
+        }
+        if !viewModel.selectedElementIds.contains(element.id) {
+            viewModel.selectElement(element)
+        }
+    }
+
     @ViewBuilder
     private func elementContextMenu(for element: CanvasElement) -> some View {
         if case .text = element.payload {
             Button("Edit Text") {
+                prepareContextTarget(element)
                 viewModel.editingTextElementId = element.id
             }
+            .disabled(element.isLocked)
             Divider()
         } else if case .code = element.payload {
             Button("Edit Code") {
+                prepareContextTarget(element)
                 viewModel.editingCodeElementId = element.id
             }
+            .disabled(element.isLocked)
             Divider()
         }
 
         Button("Copy (⌘C)") {
-            viewModel.selectElement(element)
+            prepareContextTarget(element)
             viewModel.copySelected()
         }
         Button("Duplicate (⌘D)") {
-            viewModel.selectElement(element)
+            prepareContextTarget(element)
             viewModel.duplicateSelected()
         }
         Divider()
         Button("Bring to Front (⌘])") {
-            viewModel.selectElement(element)
+            prepareContextTarget(element)
             viewModel.bringToFront()
         }
         Button("Send to Back (⌘[)") {
-            viewModel.selectElement(element)
+            prepareContextTarget(element)
             viewModel.sendToBack()
         }
         Divider()
         if viewModel.selectedElementIds.count >= 2 {
+            Button("Group (⌘G)") {
+                viewModel.groupSelectedElements()
+            }
             Button("Connect Selected (L)") {
                 viewModel.connectSelectedElements()
             }
             Divider()
         }
+        if element.groupId != nil {
+            Button("Ungroup (⇧⌘G)") {
+                prepareContextTarget(element)
+                viewModel.ungroupSelectedElements()
+            }
+            Divider()
+        }
         Button("Flip Horizontal") {
-            viewModel.selectElement(element)
+            prepareContextTarget(element)
             viewModel.flipSelected(horizontal: true)
         }
         Button("Flip Vertical") {
-            viewModel.selectElement(element)
+            prepareContextTarget(element)
             viewModel.flipSelected(horizontal: false)
         }
+        Button(element.isLocked ? "Unlock (⌘L)" : "Lock (⌘L)") {
+            prepareContextTarget(element)
+            viewModel.toggleLockSelected()
+        }
         Button("Copy as Image") {
-            viewModel.selectElement(element)
+            prepareContextTarget(element)
             viewModel.copySelectedElementAsImage()
         }
         Divider()
         Button("Delete (⌫)") {
-            viewModel.selectElement(element)
+            prepareContextTarget(element)
             viewModel.deleteSelected()
         }
     }
@@ -1622,7 +1699,7 @@ public struct InfiniteDotGridBackdrop: View {
             let startY = (CGFloat(panOffset.y) + size.height / 2.0).truncatingRemainder(dividingBy: step)
 
             let dotRadius: CGFloat = min(1.6, max(0.8, 1.2 * CGFloat(zoomScale)))
-            let dotColor = Color.primary.opacity(0.13)
+            let dotColor = Color.primary.opacity(0.18)
 
             for x in stride(from: startX - step, through: size.width + step, by: step) {
                 for y in stride(from: startY - step, through: size.height + step, by: step) {
@@ -1631,7 +1708,7 @@ public struct InfiniteDotGridBackdrop: View {
                 }
             }
         }
-        .background(Color(NSColor.underPageBackgroundColor))
+        .background(PlumaTheme.workspace)
     }
 }
 
@@ -1666,7 +1743,7 @@ public struct StudioDraftingWorkspaceBackdrop: View {
     }
     public var body: some View {
         ZStack {
-            Color(NSColor.underPageBackgroundColor)
+            PlumaTheme.workspace
             if showGrid {
                 Canvas { context, size in
                     let step: CGFloat = 20
@@ -1718,6 +1795,7 @@ public final class TrackpadGestureHostView: NSView {
     public var onSpacebarChanged: ((Bool) -> Void)?
 
     private var localEventMonitor: Any?
+    private var resignObserver: NSObjectProtocol?
 
     public override var acceptsFirstResponder: Bool { true }
 
@@ -1735,6 +1813,30 @@ public final class TrackpadGestureHostView: NSView {
         if let monitor = localEventMonitor {
             NSEvent.removeMonitor(monitor)
         }
+        if let observer = resignObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+    }
+
+    public override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if let observer = resignObserver {
+            NotificationCenter.default.removeObserver(observer)
+            resignObserver = nil
+        }
+        guard let window = window else { return }
+        // The spacebar key-up only arrives while this window is key — if the
+        // user releases Space after focus leaves (clicks another app, opens a
+        // sheet), `isSpacebarPressed` would stick ON forever: pan mode + hand
+        // cursor stuck and every element gesture early-returns. Reset on resign.
+        resignObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didResignKeyNotification,
+            object: window,
+            queue: .main
+        ) { [weak self] _ in
+            self?.onSpacebarChanged?(false)
+            NSCursor.arrow.set()
+        }
     }
 
     private func setupGlobalMonitors() {
@@ -1742,7 +1844,11 @@ public final class TrackpadGestureHostView: NSView {
             guard let self = self, let vm = self.viewModel else { return event }
 
             if event.type == .keyDown && event.keyCode == 49 && !event.isARepeat { // Spacebar pressed
-                if vm.editingTextElementId == nil && vm.editingCodeElementId == nil {
+                // Typing a space in any text field (inspector, rename, popover)
+                // must not flip the canvas into pan mode.
+                let typingInField = (event.window ?? NSApp.keyWindow)?.firstResponder is NSText
+                if vm.editingTextElementId == nil && vm.editingCodeElementId == nil && !typingInField
+                    && (event.window == nil || event.window === self.window) {
                     self.onSpacebarChanged?(true)
                     NSCursor.openHand.set()
                 }
@@ -1805,5 +1911,71 @@ public final class TrackpadGestureHostView: NSView {
         let local = convert(mouseLoc, from: nil)
         // AppKit is bottom-left origin; SwiftUI is top-left origin.
         return CGPoint(x: local.x, y: bounds.height - local.y)
+    }
+}
+
+// MARK: - Equatable element renderer
+
+/// Wraps `ElementRendererView` so SwiftUI can skip re-rendering elements whose
+/// content didn't change. Every drag tick republishes `project`, which used to
+/// re-evaluate every element on every page (Document mode especially). The
+/// callbacks only capture the view model and the element id, so they are
+/// deliberately left out of `==`. Position is applied by the parent via
+/// `.position`, so a pure move doesn't re-render the content either.
+private struct EquatableElementRenderer: View, Equatable {
+    let viewModel: CanvasDocumentViewModel
+    let element: CanvasElement
+    let isEditingText: Bool
+    let isEditingCode: Bool
+    let isLiveTransforming: Bool
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        guard lhs.isEditingText == rhs.isEditingText,
+              lhs.isEditingCode == rhs.isEditingCode,
+              lhs.isLiveTransforming == rhs.isLiveTransforming else { return false }
+        if lhs.element == rhs.element { return true }
+        var unmoved = rhs.element
+        unmoved.x = lhs.element.x
+        unmoved.y = lhs.element.y
+        return lhs.element == unmoved
+    }
+
+    var body: some View {
+        let id = element.id
+        let viewModel = viewModel
+        ElementRendererView(
+            element: element,
+            isEditingText: isEditingText,
+            isEditingCode: isEditingCode,
+            isLiveTransforming: isLiveTransforming,
+            onUpdateText: { newText in
+                viewModel.updateTextAndFitHeight(id: id, newText: newText)
+            },
+            onCommitText: {
+                viewModel.editingTextElementId = nil
+            },
+            onUpdateCode: { newCode in
+                viewModel.updateCodeAndFitHeight(id: id, newCode: newCode)
+            },
+            onUpdateLanguage: { newLang in
+                viewModel.saveHistoryState()
+                viewModel.updateElement(id: id) { elem in
+                    if case .code(var c) = elem.payload {
+                        c.language = newLang
+                        c.windowTitle = "snippet.\(newLang.fileExtension)"
+                        elem.payload = .code(c)
+                    }
+                }
+            },
+            onUpdateTheme: { newTheme in
+                viewModel.saveHistoryState()
+                viewModel.updateElement(id: id) { elem in
+                    if case .code(var c) = elem.payload {
+                        c.theme = newTheme
+                        elem.payload = .code(c)
+                    }
+                }
+            }
+        )
     }
 }

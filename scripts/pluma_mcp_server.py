@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """
+Requires Python >= 3.10 (uses `dict | None` type-union syntax).
+
 Pluma MCP Server — lets AI agents (Claude Desktop, Cursor, …) design directly in
 the LIVE Pluma app.
 
@@ -26,7 +28,6 @@ No third-party dependencies — pure stdlib MCP (JSON-RPC 2.0 over stdio).
 import sys
 import os
 import json
-import base64
 import urllib.request
 import urllib.error
 
@@ -46,6 +47,14 @@ def bridge(method: str, path: str, payload: dict | None = None, timeout: float =
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        # The app answered but rejected the request — surface ITS error message.
+        detail = ""
+        try:
+            detail = json.loads(e.read().decode()).get("error", "")
+        except Exception:
+            pass
+        raise BridgeError(f"Pluma bridge error {e.code}: {detail or e.reason}") from e
     except urllib.error.URLError as e:
         raise BridgeError(
             f"Cannot reach Pluma at {BASE} ({e.reason}). "
@@ -90,15 +99,19 @@ TOOLS = [
     },
     {
         "name": "pluma_add_element",
-        "description": "Add a new element to the canvas. Types: text, rectangle, circle, star, arrow, diamond, heart, speech (speech bubble), line, pill, hexagon, lightning, sticky (sticky note), code (code block), image (needs imageBase64).",
+        "description": "Add a new element to the canvas. Types: text, rectangle, circle, star, arrow, diamond, heart, speech (speech bubble), line, pill, hexagon, lightning, database (cylinder), chevron, cross, sticky (sticky note), code (code block — prefer pluma_add_code_block), image (needs imageBase64). Any ShapeKind name also works.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "type": {"type": "string", "description": "text | rectangle | circle | star | arrow | diamond | heart | speech | line | pill | hexagon | lightning | sticky | code | image"},
+                "type": {"type": "string", "description": "text | rectangle | circle | star | arrow | diamond | heart | speech | line | pill | hexagon | lightning | database | chevron | cross | sticky | code | image"},
                 "text": {"type": "string", "description": "Text content (text/sticky types)"},
                 "x": {"type": "number"}, "y": {"type": "number"},
                 "width": {"type": "number"}, "height": {"type": "number"},
-                "fill": {"type": "string", "description": "Hex color like #FF0000 (shape fill / sticky background)"},
+                "fill": {"type": "string", "description": "Hex color like #FF0000, or 'pattern' for a patterned fill (shape fill / sticky background)"},
+                "pattern": {"type": "string", "description": "When fill='pattern': halftone | halftoneFade | crosshatch | dots | grid | diagonalStripes | newspaperColumns"},
+                "patternScale": {"type": "number", "description": "Pattern spacing in px (8–64, default 24)"},
+                "patternColor": {"type": "string", "description": "Pattern ink color hex (default: derived from base)"},
+                "baseColor": {"type": "string", "description": "Base fill color under the pattern (default #FAF9F7)"},
                 "color": {"type": "string", "description": "Hex text color"},
                 "fontSize": {"type": "number"}, "fontWeight": {"type": "number", "description": "100–900"},
                 "fontFamily": {"type": "string"}, "align": {"type": "string", "description": "Left | Center | Right | Justified"},
@@ -119,7 +132,7 @@ TOOLS = [
                 "id": {"type": "string", "description": "Element id (from pluma_get_page)"},
                 "props": {
                     "type": "object",
-                    "description": "Properties to change: x, y, width, height, rotation, opacity, text, fill, color, fontSize, fontWeight, fontFamily, align, letterSpacing, lineSpacing, cornerRadius, name, visible, locked",
+                    "description": "Properties to change: x, y, width, height, rotation, opacity, text, fill (hex or 'pattern'), pattern, patternScale, patternColor, baseColor, color, fontSize, fontWeight, fontFamily, align, letterSpacing, lineSpacing, cornerRadius, name, visible, locked. Text boxes also: insetLeft, insetRight, insetTop, insetBottom (px margins), anchor (Top|Center|Bottom). For code blocks: code, language, theme, title.",
                 },
             },
             "required": ["id", "props"],
@@ -150,6 +163,33 @@ TOOLS = [
             "type": "object",
             "properties": {"id": {"type": "string"}, "action": {"type": "string", "enum": ["front", "back", "forward", "backward"]}},
             "required": ["id", "action"],
+        },
+    },
+    {
+        "name": "pluma_add_code_block",
+        "description": "Add a syntax-highlighted code snippet card (IDE-style window with traffic lights). Great for docs, READMEs, architecture slides. Languages: swift, python, javascript, typescript, rust, go, html, css, json, sql, cpp, bash. Themes: Carbon Dark, VS Code Dark, Monokai Pro, Dracula, Xcode Light, Paper Craft, Nordic Frost.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "code": {"type": "string", "description": "Source code to display"},
+                "language": {"type": "string", "description": "Language name or extension: python, py, swift, js, ts, rs, go, html, css, json, sql, cpp, bash, sh"},
+                "theme": {"type": "string", "description": "Theme name (default: VS Code Dark)"},
+                "title": {"type": "string", "description": "Window title, e.g. 'api.py'"},
+                "lineNumbers": {"type": "boolean"},
+                "fontSize": {"type": "number"},
+                "x": {"type": "number"}, "y": {"type": "number"},
+                "width": {"type": "number"}, "height": {"type": "number", "description": "Card height in px (default: auto-sized to line count)"},
+                "page": {"type": "integer", "description": "1-based page (default: active)"},
+            },
+            "required": ["code"],
+        },
+    },
+    {
+        "name": "pluma_clear_page",
+        "description": "Delete ALL elements on a page (default: active page). Use before rebuilding a layout. Undoable.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"page": {"type": "integer"}},
         },
     },
     {
@@ -235,6 +275,7 @@ DESIGN_GUIDE = """# Designing in Pluma with AI — Practical Guide
 - **Card grid**: rounded rectangles (rectangle type) with 24–40px gaps; put a heading + 2–3 line body inside each card area.
 - **Sticky-note board**: sticky type, 220x200, pastel fills (#FEF08A yellow, #D1FAE5 mint, #E0F2FE sky, #FCE7F3 pink), grid with 40px gaps, short phrases (≤8 words).
 - **Flow / mindmap**: shapes + pluma_connect_elements arrows between them.
+- **Code docs slide**: pluma_add_code_block with title like 'api.py' — the card renders as an IDE window with syntax colors. Pair with a database cylinder (type=database) and arrows for architecture diagrams.
 
 ## Typography
 - Display/serif headings: "Playfair Display" (800–900).
@@ -299,6 +340,21 @@ def call_tool(name: str, args: dict) -> dict:
         r = bridge("POST", "/element/add", args)
         el = r.get("element", {})
         return tool_result(f"Added {el.get('type')} element id={r.get('id')} at ({el.get('x')},{el.get('y')}) size {el.get('width')}x{el.get('height')}. Screenshot to verify.")
+
+    if name == "pluma_add_code_block":
+        args = dict(args)
+        args["type"] = "code"
+        args.setdefault("width", 560)
+        r = bridge("POST", "/element/add", args)
+        el = r.get("element", {})
+        return tool_result(
+            f"Added code block id={r.get('id')} ({el.get('language')}, theme '{el.get('theme')}') "
+            f"at ({el.get('x')},{el.get('y')}). Screenshot to verify."
+        )
+
+    if name == "pluma_clear_page":
+        r = bridge("POST", "/page/clear", args)
+        return tool_result(f"Cleared page {r.get('page')} — removed {r.get('removed')} elements.")
 
     if name == "pluma_update_element":
         r = bridge("POST", "/element/update", args)

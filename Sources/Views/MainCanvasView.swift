@@ -19,22 +19,26 @@ public struct MainCanvasView: View {
             ContextualTopBarView(viewModel: viewModel)
 
             // Main Editor Body: Left Sidebar + Centered Artboard Viewport + Right Inspector
+            // Panels stay in the hierarchy and collapse via width — the old
+            // `if` + `.move` transition could leave the view rendered but its
+            // hit-test region displaced (dead clicks/hover) after mixed
+            // animated/unanimated toggles (⌘1 animates; toolbar buttons don't).
             HStack(spacing: 0) {
-                // Collapsible Left Sidebar
-                if viewModel.isLeftSidebarVisible {
-                    LeftSidebarView(viewModel: viewModel)
-                        .transition(.move(edge: .leading).combined(with: .opacity))
-                }
+                LeftSidebarView(viewModel: viewModel)
+                    .frame(width: viewModel.isLeftSidebarVisible ? nil : 0, alignment: .leading)
+                    .clipped()
+                    .allowsHitTesting(viewModel.isLeftSidebarVisible)
 
                 // Center Artboard Canvas Viewport
                 CanvasViewportView(viewModel: viewModel)
 
-                // Collapsible Right Inspector
-                if viewModel.isRightInspectorVisible {
-                    InspectorView(viewModel: viewModel)
-                        .transition(.move(edge: .trailing).combined(with: .opacity))
-                }
+                InspectorView(viewModel: viewModel)
+                    .frame(width: viewModel.isRightInspectorVisible ? nil : 0, alignment: .trailing)
+                    .clipped()
+                    .allowsHitTesting(viewModel.isRightInspectorVisible)
             }
+            .animation(.easeInOut(duration: 0.2), value: viewModel.isLeftSidebarVisible)
+            .animation(.easeInOut(duration: 0.2), value: viewModel.isRightInspectorVisible)
         }
         .frame(minWidth: 950, minHeight: 650)
         .background(Color(NSColor.windowBackgroundColor))
@@ -63,6 +67,10 @@ public struct MainCanvasView: View {
                 .zIndex(100)
             }
         }
+        .overlay {
+            ImportProgressOverlay()
+                .zIndex(200)
+        }
         .allowsHitTesting(true)
         .background(
             KeyboardShortcutHandler(viewModel: viewModel)
@@ -88,11 +96,24 @@ struct KeyboardShortcutHandler: NSViewRepresentable {
         weak var viewModel: CanvasDocumentViewModel?
         private var monitor: Any?
 
+        /// Invisible event-monitor view sized to the whole window. It must never
+        /// enter the hit-test chain — if compositing ever lifts it above the
+        /// SwiftUI content it would silently eat every click and hover.
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
             if monitor == nil && window != nil {
                 monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
                     guard let self = self, let viewModel = self.viewModel else { return event }
+
+                    // Popovers (color picker hex field, font search) and sheets
+                    // (export, resize) are separate windows: their keystrokes
+                    // must never reach the canvas shortcuts below.
+                    guard event.window == nil || event.window === self.window else { return event }
+
+                    // Presentation mode owns the keyboard (Esc / arrows).
+                    if viewModel.isPresentingFullscreen { return event }
 
                     // CRITICAL: If the user is actively typing in a text element or text field
                     if viewModel.editingTextElementId != nil || viewModel.editingCodeElementId != nil {
@@ -104,7 +125,7 @@ struct KeyboardShortcutHandler: NSViewRepresentable {
                         return event
                     }
 
-                    if let responder = self.window?.firstResponder,
+                    if let responder = (event.window ?? NSApp.keyWindow)?.firstResponder,
                        responder is NSTextView || responder is NSTextField || responder is NSText {
                         return event
                     }
@@ -133,7 +154,13 @@ struct KeyboardShortcutHandler: NSViewRepresentable {
                             viewModel.redo()
                             return nil
                         case "c":
-                            if isShift { viewModel.copyPageImageToClipboard() } else { viewModel.copySelected() }
+                            if isOption { viewModel.copySVGForFigma() }
+                            else if isShift { viewModel.copyPageImageToClipboard() }
+                            else { viewModel.copySelected() }
+                            return nil
+                        case "l":
+                            // ⌘L — lock/unlock (advertised in the selection bar)
+                            if !viewModel.selectedElementIds.isEmpty { viewModel.toggleLockSelected() }
                             return nil
                         case "v":
                             viewModel.paste()
@@ -196,6 +223,9 @@ struct KeyboardShortcutHandler: NSViewRepresentable {
                         switch event.charactersIgnoringModifiers?.lowercased() {
                         case "v":
                             viewModel.activeTool = .select
+                            return nil
+                        case "h":
+                            viewModel.activeTool = .hand
                             return nil
                         case "t":
                             viewModel.addText()

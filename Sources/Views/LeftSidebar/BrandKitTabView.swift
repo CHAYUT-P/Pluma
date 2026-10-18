@@ -14,7 +14,7 @@ public struct BrandKitTabView: View {
                 // Header
                 VStack(alignment: .leading, spacing: 4) {
                     Text("BRAND KIT")
-                        .font(.system(size: 11, weight: .bold, design: .serif))
+                        .font(.system(size: 11, weight: .bold))
                         .foregroundColor(Color(hex: "#D97706"))
                         .tracking(1.0)
 
@@ -36,12 +36,12 @@ public struct BrandKitTabView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text(kit.name)
-                    .font(.system(size: 12, weight: .bold, design: .serif))
+                    .font(.system(size: 12, weight: .bold))
                     .foregroundColor(.primary)
 
                 Spacer()
 
-                Button("Apply Palette") {
+                Button("Use as Background") {
                     applyPalette(kit)
                 }
                 .font(.system(size: 10, weight: .semibold))
@@ -96,7 +96,7 @@ public struct BrandKitTabView: View {
         Button(action: action) {
             VStack(alignment: .leading, spacing: 1) {
                 Text(title)
-                    .font(.system(size: 9, design: .serif))
+                    .font(.system(size: 9))
                     .foregroundColor(.secondary)
                 Text(font)
                     .font(.system(size: 10, weight: .bold))
@@ -114,7 +114,10 @@ public struct BrandKitTabView: View {
     }
 
     private func applyColorToSelection(_ col: CodableColor) {
-        viewModel.saveHistoryState()
+        guard !viewModel.selectedElementIds.isEmpty else {
+            viewModel.showTemporaryToast("Select an element first to apply a brand color")
+            return
+        }
         viewModel.updateSelectedElement { elem in
             switch elem.payload {
             case .shape(var s):
@@ -134,13 +137,18 @@ public struct BrandKitTabView: View {
     }
 
     private func applyFontToSelection(_ fontName: String) {
-        viewModel.saveHistoryState()
+        guard viewModel.selectedElements.contains(where: { if case .text = $0.payload { return true } else { return false } }) else {
+            viewModel.showTemporaryToast("Select a text box first to apply a brand font")
+            return
+        }
         viewModel.updateSelectedElement { elem in
             if case .text(var t) = elem.payload {
                 t.fontFamily = fontName
                 elem.payload = .text(t)
             }
         }
+        // Different fonts have different metrics — keep the box hugging its text.
+        viewModel.refitSelectedTextHeights()
         viewModel.showTemporaryToast("Applied font \(fontName)")
     }
 

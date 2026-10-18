@@ -6,14 +6,7 @@ public struct CodeSection: View {
     public var body: some View {
         if let element = viewModel.primarySelectedElement,
            case .code(let codeContent) = element.payload {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack {
-                    Text("CODE & SYNTAX")
-                        .font(.system(size: 10.5, weight: .bold, design: .serif))
-                        .foregroundColor(Color(hex: "#D97706"))
-
-                    Spacer()
-
+            InspectorSection("Code", accessory: {
                     Button(action: {
                         let pasteboard = NSPasteboard.general
                         pasteboard.clearContents()
@@ -31,8 +24,7 @@ public struct CodeSection: View {
                         .clipShape(RoundedRectangle(cornerRadius: 4))
                     }
                     .buttonStyle(.plain)
-                }
-
+            }) {
                 // Language Picker
                 Picker("Language", selection: Binding(
                     get: { codeContent.language },
@@ -75,7 +67,7 @@ public struct CodeSection: View {
                 // Window Title
                 HStack {
                     Text("Title")
-                        .font(.system(size: 11, design: .serif))
+                        .font(.system(size: 11))
                         .foregroundColor(.secondary)
                     TextField("File title", text: Binding(
                         get: { codeContent.windowTitle },
@@ -93,7 +85,7 @@ public struct CodeSection: View {
                 }
 
                 // Toggles
-                Toggle("Show Traffic Light Header", isOn: Binding(
+                Toggle("Window header", isOn: Binding(
                     get: { codeContent.showWindowHeader },
                     set: { val in
                         viewModel.updateSelectedElement { elem in
@@ -104,9 +96,9 @@ public struct CodeSection: View {
                         }
                     }
                 ))
-                .font(.system(size: 11, design: .serif))
+                .font(.system(size: 11))
 
-                Toggle("Show Line Numbers", isOn: Binding(
+                Toggle("Line numbers", isOn: Binding(
                     get: { codeContent.showLineNumbers },
                     set: { val in
                         viewModel.updateSelectedElement { elem in
@@ -117,12 +109,12 @@ public struct CodeSection: View {
                         }
                     }
                 ))
-                .font(.system(size: 11, design: .serif))
+                .font(.system(size: 11))
 
                 // Font Size Slider
                 HStack {
                     Text("Font Size")
-                        .font(.system(size: 11, design: .serif))
+                        .font(.system(size: 11))
                         .foregroundColor(.secondary)
                     Slider(value: Binding(
                         get: { codeContent.fontSize },
@@ -158,10 +150,10 @@ public struct CodeSection: View {
                         Image(systemName: "arrow.down.doc.fill")
                         Text("Paste from Clipboard")
                     }
-                    .font(.system(size: 11, weight: .semibold, design: .serif))
+                    .font(.system(size: 11, weight: .semibold))
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 6)
-                    .background(Color(hex: "#C2410C"))
+                    .background(PlumaTheme.accent)
                     .foregroundColor(.white)
                     .clipShape(RoundedRectangle(cornerRadius: 5))
                 }
@@ -170,19 +162,13 @@ public struct CodeSection: View {
                 // Inline Code Editor
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Code Editor")
-                        .font(.system(size: 10.5, weight: .bold, design: .serif))
+                        .font(.system(size: 10.5, weight: .bold))
                         .foregroundColor(.secondary)
 
                     TextEditor(text: Binding(
                         get: { codeContent.code },
                         set: { newCode in
-                            viewModel.updateSelectedElement { elem in
-                                if case .code(var c) = elem.payload {
-                                    c.code = newCode
-                                    elem.payload = .code(c)
-                                    elem.height = CanvasDocumentViewModel.calculateCodeBlockHeight(for: c)
-                                }
-                            }
+                            viewModel.updateCodeAndFitHeight(id: element.id, newCode: newCode)
                         }
                     ))
                     .font(.system(size: 11, design: .monospaced))

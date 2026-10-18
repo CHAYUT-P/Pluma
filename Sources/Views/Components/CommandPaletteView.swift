@@ -15,7 +15,9 @@ public struct CommandPaletteView: View {
     @FocusState private var searchFocused: Bool
 
     struct Command: Identifiable {
-        let id = UUID()
+        // Stable identity: a fresh UUID per render made every row "new" on each
+        // hover, so the list re-diffed constantly.
+        var id: String { category + "/" + title }
         let title: String
         let icon: String
         let category: String
@@ -39,6 +41,17 @@ public struct CommandPaletteView: View {
         list.append(Command(title: "Add Arrow", icon: "arrow.right", category: "Insert") { viewModel.addShape(.arrow) })
         list.append(Command(title: "Add Code Block", icon: "chevron.left.forwardslash.chevron.right", category: "Insert") { viewModel.addCodeBlock() })
         list.append(Command(title: "Add QR Code…", icon: "qrcode", category: "Insert") { viewModel.addQRCode(url: "https://pluma.design") })
+        list.append(Command(title: "Add Database Cylinder", icon: "cylinder.fill", category: "Insert") { viewModel.addShape(.database) })
+
+        // --- Dev ---
+        list.append(Command(title: "Insert Terminal Window", icon: "terminal.fill", category: "Dev") { viewModel.insertElements(DevKitPresets.terminalWindow(), name: "Terminal") })
+        list.append(Command(title: "Insert Browser Window", icon: "safari.fill", category: "Dev") { viewModel.insertElements(DevKitPresets.browserWindow(), name: "Browser") })
+        list.append(Command(title: "Insert API Endpoint Chip", icon: "network", category: "Dev") { viewModel.insertElements(DevKitPresets.apiChip(), name: "API Chip") })
+        list.append(Command(title: "Insert CI Badge", icon: "checkmark.seal.fill", category: "Dev") { viewModel.insertElements(DevKitPresets.statusBadge(), name: "Badge") })
+        list.append(Command(title: "Diagram: Request Flow", icon: "arrow.triangle.swap", category: "Dev") { viewModel.insertElements(DevKitPresets.requestFlowDiagram(), name: "Request Flow") })
+        list.append(Command(title: "Diagram: CI/CD Pipeline", icon: "gearshape.2.fill", category: "Dev") { viewModel.insertElements(DevKitPresets.cicdPipeline(), name: "CI/CD Pipeline") })
+        list.append(Command(title: "Diagram: Kanban Board", icon: "rectangle.3.group.fill", category: "Dev") { viewModel.insertElements(DevKitPresets.kanbanBoard(), name: "Kanban") })
+        list.append(Command(title: "Diagram: Git Branch Flow", icon: "point.topleft.down.to.point.bottomright.curvepath.fill", category: "Dev") { viewModel.insertElements(DevKitPresets.gitFlow(), name: "Git Flow") })
         if viewModel.selectedElementIds.count >= 2 {
             list.append(Command(title: "Connect Selected Elements", icon: "arrow.triangle.turn.up.right.diamond", category: "Insert") { viewModel.connectSelectedElements() })
         }
@@ -54,7 +67,7 @@ public struct CommandPaletteView: View {
         }
         list.append(Command(title: "Undo", icon: "arrow.uturn.backward", category: "Edit") { viewModel.undo() })
         list.append(Command(title: "Redo", icon: "arrow.uturn.forward", category: "Edit") { viewModel.redo() })
-        list.append(Command(title: viewModel.enableSnapping ? "Disable Snapping" : "Enable Snapping", icon: "magnet", category: "Edit") { viewModel.enableSnapping.toggle() })
+        list.append(Command(title: viewModel.enableSnapping ? "Disable Snapping" : "Enable Snapping", icon: "squareshape.split.2x2.dotted", category: "Edit") { viewModel.enableSnapping.toggle() })
 
         // --- View / Layout ---
         list.append(Command(title: "Zoom to Selection / Fit Page (F)", icon: "arrow.up.left.and.arrow.down.right", category: "View") { viewModel.zoomToSelection(viewportSize: viewModel.lastViewportSize) })
@@ -105,6 +118,15 @@ public struct CommandPaletteView: View {
                 .onTapGesture(perform: onClose)
 
             VStack(spacing: 0) {
+                // Halftone press strip across the top of the palette
+                HalftonePatternView(
+                    ink: Color(hex: "#C2410C").opacity(0.5),
+                    spacing: 7,
+                    maxRadius: 1.7,
+                    ramp: .linear(angle: 90, from: 0.9, to: 0.0)
+                )
+                .frame(height: 5)
+
                 // Search field
                 HStack(spacing: 10) {
                     Image(systemName: "magnifyingglass")

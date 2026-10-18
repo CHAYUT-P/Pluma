@@ -8,6 +8,31 @@ public struct PresetPickerModal: View {
     @State private var customWidth: Double = 1080
     @State private var customHeight: Double = 1080
     @State private var isLockAspectRatio: Bool = false
+
+    /// With the ratio locked, editing one side scales the other.
+    private var widthBinding: Binding<Double> {
+        Binding(
+            get: { customWidth },
+            set: { w in
+                if isLockAspectRatio && customWidth > 0 {
+                    customHeight = (w * customHeight / customWidth).rounded()
+                }
+                customWidth = w
+            }
+        )
+    }
+
+    private var heightBinding: Binding<Double> {
+        Binding(
+            get: { customHeight },
+            set: { h in
+                if isLockAspectRatio && customHeight > 0 {
+                    customWidth = (h * customWidth / customHeight).rounded()
+                }
+                customHeight = h
+            }
+        )
+    }
     @State private var selectedCategory: PresetCategory = .social
     @State private var hoveredPresetId: String? = nil
 
@@ -51,13 +76,14 @@ public struct PresetPickerModal: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .keyboardShortcut(.cancelAction)
                 .help("Close (Esc)")
             }
 
             // Custom Dimensions Input Card
             VStack(alignment: .leading, spacing: 10) {
                 Text("CUSTOM DIMENSIONS")
-                    .font(.system(size: 10.5, weight: .bold, design: .serif))
+                    .font(.system(size: 10.5, weight: .bold))
                     .foregroundColor(.secondary)
                     .tracking(0.8)
 
@@ -65,11 +91,11 @@ public struct PresetPickerModal: View {
                     // Width input
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Width (px)")
-                            .font(.system(size: 10, design: .serif))
+                            .font(.system(size: 10))
                             .foregroundColor(.secondary)
 
                         HStack {
-                            TextField("Width", value: $customWidth, format: .number)
+                            TextField("Width", value: widthBinding, format: .number)
                                 .textFieldStyle(.plain)
                                 .font(.system(size: 12, weight: .semibold, design: .monospaced))
                                 .frame(width: 70)
@@ -122,11 +148,11 @@ public struct PresetPickerModal: View {
                     // Height input
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Height (px)")
-                            .font(.system(size: 10, design: .serif))
+                            .font(.system(size: 10))
                             .foregroundColor(.secondary)
 
                         HStack {
-                            TextField("Height", value: $customHeight, format: .number)
+                            TextField("Height", value: heightBinding, format: .number)
                                 .textFieldStyle(.plain)
                                 .font(.system(size: 12, weight: .semibold, design: .monospaced))
                                 .frame(width: 70)
@@ -145,16 +171,15 @@ public struct PresetPickerModal: View {
 
                     // Apply Button
                     Button(action: {
-                        viewModel.saveHistoryState()
-                        viewModel.currentPage.width = max(100, customWidth)
-                        viewModel.currentPage.height = max(100, customHeight)
+                        viewModel.setCurrentPageSize(width: max(100, customWidth), height: max(100, customHeight))
+                        viewModel.syncLayoutMode()
                         dismiss()
                     }) {
                         HStack(spacing: 6) {
                             Image(systemName: "checkmark")
                                 .font(.system(size: 11, weight: .bold))
                             Text("Apply Size")
-                                .font(.system(size: 12, weight: .semibold, design: .serif))
+                                .font(.system(size: 12, weight: .semibold))
                         }
                         .padding(.horizontal, 14)
                         .padding(.vertical, 8)
@@ -214,7 +239,7 @@ public struct PresetPickerModal: View {
                 Image(systemName: icon)
                     .font(.system(size: 11))
                 Text(title)
-                    .font(.system(size: 11, weight: isSelected ? .bold : .medium, design: .serif))
+                    .font(.system(size: 11, weight: isSelected ? .bold : .medium))
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
@@ -264,7 +289,7 @@ public struct PresetPickerModal: View {
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 6) {
                         Text(preset.name)
-                            .font(.system(size: 12, weight: .bold, design: .serif))
+                            .font(.system(size: 12, weight: .bold))
                             .foregroundColor(.primary)
                             .lineLimit(1)
 

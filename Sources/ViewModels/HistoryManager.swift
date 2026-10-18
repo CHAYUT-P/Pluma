@@ -34,7 +34,7 @@ public final class HistoryManager {
 
     public func undo(currentProject: CanvasProject) -> CanvasProject? {
         guard let previous = undoStack.popLast() else { return nil }
-        let bytes = estimatedBytes.popLast() ?? 0
+        _ = estimatedBytes.popLast()
         redoStack.append(currentProject)
         redoBytes.append(Self.estimateBytes(of: currentProject))
         trimExcess()
@@ -43,7 +43,7 @@ public final class HistoryManager {
 
     public func redo(currentProject: CanvasProject) -> CanvasProject? {
         guard let next = redoStack.popLast() else { return nil }
-        redoBytes.popLast()
+        _ = redoBytes.popLast()
         undoStack.append(currentProject)
         estimatedBytes.append(Self.estimateBytes(of: currentProject))
         trimExcess()

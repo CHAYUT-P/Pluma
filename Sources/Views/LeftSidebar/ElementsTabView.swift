@@ -6,7 +6,7 @@ public struct ElementsTabView: View {
     public var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("SHAPES & CRAFT")
-                .font(.system(size: 12, weight: .bold, design: .serif))
+                .font(.system(size: 12, weight: .bold))
                 .foregroundColor(.primary)
                 .tracking(0.5)
                 .padding(.horizontal, 14)
@@ -29,7 +29,7 @@ public struct ElementsTabView: View {
                     sectionHeader("Tactile Stationery & Seals")
                     LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
                         craftButton(title: "Washi Tape", kind: .washiTape, icon: "bookmark.fill", fill: .solid(CodableColor.washiTerracotta.withAlphaComponent(0.85)))
-                        craftButton(title: "Postage Stamp", kind: .postageStamp, icon: "stamp.fill", fill: .solid(CodableColor(hex: "#FAF5E9")))
+                        craftButton(title: "Postage Stamp", kind: .postageStamp, icon: "envelope.fill", fill: .solid(CodableColor(hex: "#FAF5E9")))
                         craftButton(title: "Wax Seal", kind: .waxSeal, icon: "seal.fill", fill: .solid(.waxSealRed))
                         craftButton(title: "Torn Paper", kind: .tornPaper, icon: "doc.plaintext.fill", fill: .solid(CodableColor(hex: "#FAF7F0")))
                         craftButton(title: "Price Tag", kind: .tag, icon: "tag.fill", fill: .solid(CodableColor(hex: "#EFE8DA")))
@@ -66,6 +66,7 @@ public struct ElementsTabView: View {
                     // Standard Geometric Shapes
                     sectionHeader("Geometrics & Polygons")
                     LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                        miniShapeButton(title: "Database", kind: .database, icon: "cylinder.fill")
                         miniShapeButton(title: "Rectangle", kind: .rectangle, icon: "square.fill")
                         miniShapeButton(title: "Card", kind: .roundedRectangle, icon: "app.fill")
                         miniShapeButton(title: "Capsule", kind: .pill, icon: "capsule.fill")
@@ -89,7 +90,7 @@ public struct ElementsTabView: View {
 
     private func sectionHeader(_ title: String) -> some View {
         Text(title)
-            .font(.system(size: 11, weight: .bold, design: .serif))
+            .font(.system(size: 11, weight: .bold))
             .foregroundColor(Color(hex: "#C2410C"))
             .tracking(0.3)
             .padding(.top, 4)
@@ -105,7 +106,7 @@ public struct ElementsTabView: View {
                     .foregroundColor(Color(hex: "#C2410C"))
 
                 Text(title)
-                    .font(.system(size: 11, weight: .semibold, design: .serif))
+                    .font(.system(size: 11, weight: .semibold))
                     .foregroundColor(.primary)
 
                 Spacer()
@@ -130,7 +131,7 @@ public struct ElementsTabView: View {
                     .foregroundColor(Color(hex: "#C2410C"))
 
                 Text(title)
-                    .font(.system(size: 9.5, weight: .medium, design: .serif))
+                    .font(.system(size: 9.5, weight: .medium))
                     .foregroundColor(.primary)
             }
             .frame(maxWidth: .infinity)
@@ -153,8 +154,10 @@ public struct ElementsTabView: View {
                     .foregroundColor(textColor.color)
 
                 Text(title)
-                    .font(.system(size: 11, weight: .semibold, design: .serif))
-                    .foregroundColor(.primary)
+                    .font(.system(size: 11, weight: .semibold))
+                    // Sticky fills are fixed pastels — use the note's own ink, not
+                    // .primary (white-on-pastel in dark mode).
+                    .foregroundColor(textColor.color)
 
                 Spacer()
             }

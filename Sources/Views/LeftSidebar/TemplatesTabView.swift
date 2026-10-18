@@ -3,6 +3,9 @@ import SwiftUI
 public struct TemplatesTabView: View {
     @ObservedObject var viewModel: CanvasDocumentViewModel
     @State private var selectedCategory: String = "All"
+    /// Template awaiting a replace/append decision (only asked when the
+    /// design already has content — one click used to wipe every page).
+    @State private var pendingTemplate: CanvasTemplate?
 
     private var isWhiteboard: Bool {
         (viewModel.currentPage.width >= 2400 && viewModel.currentPage.height >= 1800) || (viewModel.currentPage.width == 3200 && viewModel.currentPage.height == 2000)
@@ -39,57 +42,56 @@ public struct TemplatesTabView: View {
         return "\(Int(viewModel.currentPage.width)) × \(Int(viewModel.currentPage.height))"
     }
 
-    private var availableCategories: [String] {
+    /// Templates matching the current canvas format, in catalog order.
+    private var baseTemplates: [CanvasTemplate] {
         if isWhiteboard {
-            return ["All", "Mindmaps", "Flowcharts", "Sticky Boards"]
-        } else if isA4OrPortraitDocument {
-            return ["All", "Resumes & CVs", "Documents & Reports", "Creative & Editorial"]
-        } else if isPresentation16x9 {
-            return ["All", "Decks & Keynotes", "Portfolios", "Exhibitions"]
-        } else if isSquare {
-            return ["All", "Editorial Zine", "Quotes & Passes", "Scrapbook"]
-        } else if isStory {
-            return ["All", "Story & Reel", "Countdowns", "Tips"]
-        } else {
-            return ["All"]
-        }
-    }
-
-    private var matchingTemplates: [CanvasTemplate] {
-        var baseList: [CanvasTemplate] = []
-
-        if isWhiteboard {
-            baseList = TemplateCatalog.templates.filter { $0.docType == .whiteboard }
+            return TemplateCatalog.templates.filter { $0.docType == .whiteboard }
         } else if isA4OrPortraitDocument {
             // Strictly include only A4 and Resume templates
-            baseList = TemplateCatalog.templates.filter {
+            return TemplateCatalog.templates.filter {
                 $0.docType == .a4 || $0.docType == .resume || ($0.page.width == 1240 && $0.page.height == 1754)
             }
         } else if isPresentation16x9 {
-            baseList = TemplateCatalog.templates.filter { $0.docType == .presentation }
+            return TemplateCatalog.templates.filter { $0.docType == .presentation }
         } else if isSquare {
-            baseList = TemplateCatalog.templates.filter { $0.docType == .square }
+            return TemplateCatalog.templates.filter { $0.docType == .square }
         } else if isStory {
-            baseList = TemplateCatalog.templates.filter { $0.docType == .story }
-        } else {
-            baseList = TemplateCatalog.templates
+            return TemplateCatalog.templates.filter { $0.docType == .story }
         }
+        return TemplateCatalog.templates
+    }
 
-        if selectedCategory == "All" {
-            return baseList
+    /// Real categories present in the current format's templates — never drifts
+    /// out of sync when the catalog grows.
+    private var availableCategories: [String] {
+        var seen: [String] = []
+        for t in baseTemplates where !seen.contains(t.category) {
+            seen.append(t.category)
         }
+        return ["All"] + seen
+    }
 
-        if selectedCategory == "Resumes & CVs" {
-            return baseList.filter {
-                $0.category == "Resumes & CVs" || $0.docType == .resume || $0.id.contains("resume")
+    /// Templates grouped by category (catalog order), honouring the active pill.
+    /// Falls back to "All" if the selection isn't present in this format.
+    private var groupedTemplates: [(category: String, items: [CanvasTemplate])] {
+        let valid = selectedCategory == "All" || availableCategories.contains(selectedCategory)
+        let list = !valid || selectedCategory == "All"
+            ? baseTemplates
+            : baseTemplates.filter { $0.category == selectedCategory }
+        var order: [String] = []
+        var groups: [String: [CanvasTemplate]] = [:]
+        for t in list {
+            if groups[t.category] == nil {
+                order.append(t.category)
+                groups[t.category] = []
             }
-        } else if selectedCategory == "Documents & Reports" {
-            return baseList.filter {
-                $0.category != "Resumes & CVs" && !$0.id.contains("resume")
-            }
+            groups[t.category]?.append(t)
         }
+        return order.map { ($0, groups[$0] ?? []) }
+    }
 
-        return baseList.filter { $0.category == selectedCategory || $0.themeName == selectedCategory }
+    private var matchingTemplates: [CanvasTemplate] {
+        groupedTemplates.flatMap(\.items)
     }
 
     public var body: some View {
@@ -98,7 +100,7 @@ public struct TemplatesTabView: View {
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
                     Text("STUDIO TEMPLATES")
-                        .font(.system(size: 11, weight: .bold, design: .serif))
+                        .font(.system(size: 11, weight: .bold))
                         .foregroundColor(Color(hex: "#D97706"))
                         .tracking(1.0)
                     Spacer()
@@ -113,7 +115,7 @@ public struct TemplatesTabView: View {
                         .foregroundColor(Color(hex: "#C2410C"))
 
                     Text("Active Canvas: \(currentFormatTitle)")
-                        .font(.system(size: 10.5, weight: .semibold, design: .serif))
+                        .font(.system(size: 10.5, weight: .semibold))
                         .foregroundColor(.primary)
                 }
             }
@@ -127,18 +129,8 @@ public struct TemplatesTabView: View {
                         Button(action: {
                             selectedCategory = category
                         }) {
-                            HStack(spacing: 4) {
-                                if category == "Resumes & CVs" {
-                                    Image(systemName: "person.text.rectangle.fill")
-                                        .font(.system(size: 9))
-                                } else if category == "Documents & Reports" {
-                                    Image(systemName: "doc.plaintext.fill")
-                                        .font(.system(size: 9))
-                                }
-
-                                Text(category)
-                                    .font(.system(size: 10, weight: selectedCategory == category ? .bold : .medium, design: .serif))
-                            }
+                            Text(category)
+                                .font(.system(size: 10, weight: selectedCategory == category ? .bold : .medium))
                             .padding(.horizontal, 9)
                             .padding(.vertical, 4.5)
                             .background(
@@ -160,16 +152,48 @@ public struct TemplatesTabView: View {
 
             Divider()
 
-            // Templates Grid List
+            // Templates Grid List — grouped by category
             ScrollView(.vertical, showsIndicators: true) {
-                LazyVStack(spacing: 12) {
-                    ForEach(matchingTemplates) { template in
-                        templateCard(template)
+                LazyVStack(alignment: .leading, spacing: 12) {
+                    ForEach(groupedTemplates, id: \.category) { group in
+                        if selectedCategory == "All" {
+                            HStack(alignment: .firstTextBaseline) {
+                                Text(group.category.uppercased())
+                                    .font(.system(size: 10, weight: .bold))
+                                    .foregroundColor(Color(hex: "#D97706"))
+                                    .tracking(1.2)
+                                Spacer()
+                                Text("\(group.items.count)")
+                                    .font(.system(size: 9.5, design: .monospaced))
+                                    .foregroundColor(.secondary)
+                            }
+                            .padding(.top, 6)
+                        }
+                        ForEach(group.items) { template in
+                            templateCard(template)
+                        }
                     }
                 }
                 .padding(.horizontal, 14)
                 .padding(.bottom, 20)
             }
+        }
+        .confirmationDialog(
+            "Use “\(pendingTemplate?.title ?? "")”?",
+            isPresented: Binding(get: { pendingTemplate != nil }, set: { if !$0 { pendingTemplate = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("Add as New Pages") {
+                if let t = pendingTemplate { viewModel.appendTemplatePages(t) }
+                pendingTemplate = nil
+            }
+            Button("Replace Current Design", role: .destructive) {
+                if let t = pendingTemplate { applyTemplate(t) }
+                pendingTemplate = nil
+            }
+            Button("Cancel", role: .cancel) { pendingTemplate = nil }
+        } message: {
+            Text("Your design already has content. Replacing it can be undone with ⌘Z.")
         }
     }
 
@@ -177,7 +201,11 @@ public struct TemplatesTabView: View {
 
     private func templateCard(_ template: CanvasTemplate) -> some View {
         Button(action: {
-            applyTemplate(template)
+            if viewModel.hasDesignContent {
+                pendingTemplate = template
+            } else {
+                applyTemplate(template)
+            }
         }) {
             VStack(alignment: .leading, spacing: 8) {
                 // Miniature Artboard Preview
@@ -186,13 +214,23 @@ public struct TemplatesTabView: View {
                         .fill(Color(hex: template.previewColorHex).opacity(0.12))
                         .frame(height: 120)
 
+                    let accent = CodableColor(hex: template.previewColorHex)
+                    HalftonePatternView(
+                        ink: (accent.isLight ? Color(hex: "#C2410C") : accent.color).opacity(0.35),
+                        spacing: 9,
+                        maxRadius: 2.2,
+                        ramp: .linear(angle: 225, from: 0.8, to: 0.0)
+                    )
+                    .frame(height: 120)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+
                     VStack(spacing: 4) {
                         Image(systemName: template.category == "Resumes & CVs" || template.id.contains("resume") ? "person.text.rectangle.fill" : "doc.text.fill")
                             .font(.system(size: 26))
                             .foregroundColor(Color(hex: template.previewColorHex))
 
                         Text(template.title)
-                            .font(.system(size: 11, weight: .bold, design: .serif))
+                            .font(.system(size: 11, weight: .bold))
                             .foregroundColor(.primary)
                             .lineLimit(1)
 
@@ -211,19 +249,19 @@ public struct TemplatesTabView: View {
                 HStack {
                     VStack(alignment: .leading, spacing: 1) {
                         Text(template.title)
-                            .font(.system(size: 11.5, weight: .bold, design: .serif))
+                            .font(.system(size: 11.5, weight: .bold))
                             .foregroundColor(.primary)
                             .lineLimit(1)
 
                         Text(template.themeName)
-                            .font(.system(size: 10, design: .serif))
+                            .font(.system(size: 10))
                             .foregroundColor(.secondary)
                     }
 
                     Spacer()
 
                     Text("Use")
-                        .font(.system(size: 10.5, weight: .bold, design: .serif))
+                        .font(.system(size: 10.5, weight: .bold))
                         .foregroundColor(Color(hex: "#C2410C"))
                         .padding(.horizontal, 8)
                         .padding(.vertical, 3)
@@ -245,13 +283,8 @@ public struct TemplatesTabView: View {
     }
 
     private func applyTemplate(_ template: CanvasTemplate) {
-        viewModel.saveHistoryState()
-        viewModel.project.name = template.title
-        viewModel.project.pages = template.pages
-        viewModel.activePageIndex = 0
-        viewModel.selectedElementIds.removeAll()
-        viewModel.editingTextElementId = nil
-        viewModel.editingCodeElementId = nil
-        viewModel.showTemporaryToast("Applied \(template.title)")
+        // Canonical path lives on the view model — it also persists the change,
+        // syncs the page layout mode, and handles single-page templates.
+        viewModel.applyTemplate(template)
     }
 }

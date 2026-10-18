@@ -12,12 +12,9 @@ public struct FillSection: View {
     public var body: some View {
         if let element = viewModel.primarySelectedElement,
            case .shape(let shape) = element.payload {
-            VStack(alignment: .leading, spacing: 10) {
-                Text("FILL & TEXTURE")
-                    .font(.system(size: 10, weight: .bold, design: .serif))
-                    .foregroundColor(Color(hex: "#D97706"))
+            InspectorSection("Fill") {
 
-                Picker("Texture Stock", selection: Binding(
+                Picker("Fill type", selection: Binding(
                     get: { shape.fill.type },
                     set: { newType in
                         viewModel.updateSelectedElement { elem in
@@ -36,8 +33,8 @@ public struct FillSection: View {
 
                 // Color Picker (Custom Canva Popover)
                 HStack {
-                    Text("Base Tint")
-                        .font(.system(size: 11, design: .serif))
+                    Text("Color")
+                        .font(.system(size: 11))
                         .foregroundColor(.secondary)
                     Spacer()
                     CanvaColorButton(
@@ -74,19 +71,84 @@ public struct FillSection: View {
                                 Circle()
                                     .fill(swatch.color)
                                     .frame(width: 18, height: 18)
-                                    .overlay(Circle().stroke(Color(hex: "#3D3833"), lineWidth: 1))
+                                    .overlay(Circle().stroke(PlumaTheme.hairline, lineWidth: 1))
                             }
                             .buttonStyle(.plain)
                         }
                     }
                 }
 
+                // Pattern controls (Pattern Grid fill type)
+                if shape.fill.type == .pattern {
+                    Picker("Pattern", selection: Binding(
+                        get: { shape.fill.patternStyle },
+                        set: { newStyle in
+                            viewModel.updateSelectedElement { elem in
+                                if case .shape(var s) = elem.payload {
+                                    s.fill.patternStyle = newStyle
+                                    elem.payload = .shape(s)
+                                }
+                            }
+                        }
+                    )) {
+                        ForEach(PatternStyle.allCases, id: \.self) { style in
+                            Text(style.rawValue).tag(style)
+                        }
+                    }
+                    .pickerStyle(.menu)
+
+                    HStack {
+                        Text("Density")
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
+                        Slider(value: Binding(
+                            get: { shape.fill.patternScale },
+                            set: { val in
+                                viewModel.updateSelectedElement { elem in
+                                    if case .shape(var s) = elem.payload {
+                                        s.fill.patternScale = val
+                                        elem.payload = .shape(s)
+                                    }
+                                }
+                            }
+                        ), in: 8...64, step: 1)
+                        Text("\(Int(shape.fill.patternScale))")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundColor(.secondary)
+                            .frame(width: 24)
+                    }
+
+                    HStack {
+                        Text("Ink")
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        CanvaColorButton(
+                            color: Binding(
+                                get: { shape.fill.patternColor ?? PatternInk.resolve(for: shape.fill) },
+                                set: { newCol in
+                                    viewModel.updateSelectedElement { elem in
+                                        if case .shape(var s) = elem.payload {
+                                            s.fill.patternColor = newCol
+                                            elem.payload = .shape(s)
+                                        }
+                                    }
+                                }
+                            ),
+                            size: 22
+                        )
+                        Text((shape.fill.patternColor ?? PatternInk.resolve(for: shape.fill)).hexString)
+                            .font(.system(size: 10.5, design: .monospaced))
+                            .foregroundColor(.secondary)
+                    }
+                }
+
                 // Corner Radius
                 if shape.kind == .roundedRectangle || shape.kind == .rectangle {
                     HStack {
-                        Text("Corner Deckle")
-                            .font(.system(size: 11, design: .serif))
-                            .foregroundColor(Color(hex: "#8C827A"))
+                        Text("Corner radius")
+                            .font(.system(size: 11))
+                            .foregroundColor(Color.secondary)
                         Slider(value: Binding(
                             get: { shape.cornerRadius },
                             set: { val in
@@ -100,7 +162,7 @@ public struct FillSection: View {
                         ), in: 0...60, step: 1)
                         Text("\(Int(shape.cornerRadius))")
                             .font(.system(size: 11, design: .monospaced))
-                            .foregroundColor(Color(hex: "#FAF7F0"))
+                            .foregroundColor(Color.primary)
                             .frame(width: 24)
                     }
                 }

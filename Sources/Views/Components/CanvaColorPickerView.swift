@@ -123,7 +123,7 @@ public struct CanvaColorPickerView: View {
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
                     Text("Hue")
-                        .font(.system(size: 10, weight: .medium, design: .serif))
+                        .font(.system(size: 10, weight: .medium))
                         .foregroundColor(.secondary)
                     Spacer()
                     Text("\(Int(hue * 360))°")
@@ -174,7 +174,7 @@ public struct CanvaColorPickerView: View {
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
                     Text("Opacity")
-                        .font(.system(size: 10, weight: .medium, design: .serif))
+                        .font(.system(size: 10, weight: .medium))
                         .foregroundColor(.secondary)
                     Spacer()
                     Text("\(Int(opacity * 100))%")
@@ -226,17 +226,20 @@ public struct CanvaColorPickerView: View {
             if !documentColors.isEmpty {
                 VStack(alignment: .leading, spacing: 5) {
                     Text("Document Colors")
-                        .font(.system(size: 10, weight: .bold, design: .serif))
+                        .font(.system(size: 10, weight: .bold))
                         .foregroundColor(.secondary)
 
-                    paletteGrid(colors: Array(Set(documentColors)).prefix(14).map { $0 })
+                    // Stable first-seen order — Array(Set(...)) reshuffled every render.
+                    paletteGrid(colors: Array(documentColors.reduce(into: [CodableColor]()) { acc, c in
+                        if !acc.contains(c) { acc.append(c) }
+                    }.prefix(14)))
                 }
             }
 
             // Default Material & Vibrant Swatches
             VStack(alignment: .leading, spacing: 5) {
                 Text("Default Palette")
-                    .font(.system(size: 10, weight: .bold, design: .serif))
+                    .font(.system(size: 10, weight: .bold))
                     .foregroundColor(.secondary)
 
                 paletteGrid(colors: defaultNeutrals)
@@ -335,7 +338,9 @@ public struct CanvaColorPickerView: View {
 
     // MARK: - State Sync Helpers
 
-    private func selectPresetColor(_ c: CodableColor) {
+    private func selectPresetColor(_ swatch: CodableColor) {
+        // Swatches pick a hue, not a transparency — keep the current opacity.
+        let c = swatch.withAlphaComponent(opacity)
         selectedColor = c
         syncStateFromColor(c)
         onColorChanged?(c)
@@ -344,6 +349,12 @@ public struct CanvaColorPickerView: View {
     private func applyHexInput() {
         var cleanHex = hexInput.trimmingCharacters(in: .whitespacesAndNewlines)
         if !cleanHex.hasPrefix("#") { cleanHex = "#" + cleanHex }
+        // Reject malformed input instead of silently turning the color black.
+        let digits = cleanHex.dropFirst()
+        guard [3, 6, 8].contains(digits.count), digits.allSatisfy(\.isHexDigit) else {
+            hexInput = selectedColor.hexString.replacingOccurrences(of: "#", with: "")
+            return
+        }
         let newCol = CodableColor(hex: cleanHex, opacity: opacity)
         selectedColor = newCol
         syncStateFromColor(newCol)

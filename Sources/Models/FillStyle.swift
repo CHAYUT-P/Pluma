@@ -29,6 +29,9 @@ public enum PatternStyle: String, Codable, CaseIterable {
     case grid = "Grid Lines"
     case diagonalStripes = "Diagonal Stripes"
     case newspaperColumns = "Newspaper Rules"
+    case halftone = "Halftone Screen"
+    case halftoneFade = "Halftone Fade"
+    case crosshatch = "Crosshatch"
 }
 
 public struct FillStyle: Codable, Equatable, Hashable {
@@ -38,6 +41,9 @@ public struct FillStyle: Codable, Equatable, Hashable {
     public var gradientAngle: Double // in degrees (0 to 360)
     public var patternStyle: PatternStyle
     public var patternScale: Double // spacing in points (e.g., 20.0)
+    /// Ink color for pattern fills. Optional so older saved files decode fine;
+    /// nil means "derive from the base tint" at render time.
+    public var patternColor: CodableColor?
     public var glassBlur: Double
     public var glassOpacity: Double
 
@@ -51,6 +57,7 @@ public struct FillStyle: Codable, Equatable, Hashable {
         gradientAngle: Double = 90.0,
         patternStyle: PatternStyle = .grid,
         patternScale: Double = 24.0,
+        patternColor: CodableColor? = nil,
         glassBlur: Double = 20.0,
         glassOpacity: Double = 0.65
     ) {
@@ -60,6 +67,7 @@ public struct FillStyle: Codable, Equatable, Hashable {
         self.gradientAngle = gradientAngle
         self.patternStyle = patternStyle
         self.patternScale = patternScale
+        self.patternColor = patternColor
         self.glassBlur = glassBlur
         self.glassOpacity = glassOpacity
     }

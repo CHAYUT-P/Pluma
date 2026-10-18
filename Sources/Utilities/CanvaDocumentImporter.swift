@@ -6,7 +6,7 @@ import UniformTypeIdentifiers
 public enum CanvaDocumentImporter {
 
     /// Supported file extensions for importing Canva, PowerPoint, and vector documents
-    public static let supportedExtensions = ["pptx", "pdf", "svg", "png", "jpg", "jpeg", "webp", "heic", "tiff", "zip", "json", "pluma"]
+    public static let supportedExtensions = ["pptx", "pdf", "svg", "png", "jpg", "jpeg", "webp", "heic", "tiff", "zip", "json", "pluma", "canv"]
 
     /// Imports any supported Canva export, PowerPoint deck, PDF, SVG, Image, or Zip into a complete multi-page CanvasProject.
     public static func importDocument(from url: URL) -> CanvasProject? {
@@ -27,7 +27,7 @@ public enum CanvaDocumentImporter {
             return importFromZIP(url: url, projectName: projectName)
         case "png", "jpg", "jpeg", "webp", "heic", "tiff":
             return importFromImage(url: url, projectName: projectName)
-        case "json", "pluma":
+        case "json", "pluma", "canv":
             return importFromJSON(url: url)
         default:
             return nil
@@ -96,17 +96,22 @@ public enum CanvaDocumentImporter {
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
-        process.arguments = ["-q", url.path, "-d", tempDir.path]
-        do {
-            try process.run()
-        } catch {
+        // Bound the archive BEFORE extraction — a crafted zip can claim
+        // terabytes of uncompressed data; checking only after unzip has run
+        // already exhausted the disk. Fail closed: an archive whose central
+        // directory can't even be listed is not a valid pptx anyway.
+        if archiveWithinLimits(url) != true {
+            NSLog("PPTX import: %@ exceeds archive limits (entries/size) — possible zip bomb", url.lastPathComponent)
             try? FileManager.default.removeItem(at: tempDir)
             return nil
         }
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else {
+        guard unzipArchive(at: url, into: tempDir) else {
+            NSLog("PPTX import: unzip failed for %@", url.lastPathComponent)
+            try? FileManager.default.removeItem(at: tempDir)
+            return nil
+        }
+        guard validateExtraction(at: tempDir) else {
+            NSLog("PPTX import: %@ exceeds extraction limits (entries/size) — possible zip bomb", url.lastPathComponent)
             try? FileManager.default.removeItem(at: tempDir)
             return nil
         }
@@ -121,7 +126,10 @@ public enum CanvaDocumentImporter {
         // ---------- B. Exact slide size (no preset remapping!) ----------
         var slideWpx: Double = 1280
         var slideHpx: Double = 720
-        if let presData = try? Data(contentsOf: tempDir.appendingPathComponent("ppt/presentation.xml")),
+        let presXML = tempDir.appendingPathComponent("ppt/presentation.xml")
+        let presContained = isContained(presXML, under: tempDir)
+        if presContained,
+           let presData = try? Data(contentsOf: presXML),
            let sldSz = (try? XMLDocument(data: presData))?.rootElement()?.elements(forName: "p:sldSz").first {
             let cx = Double(sldSz.attribute(forName: "cx")?.stringValue ?? "") ?? (1280 * emuPerPx)
             let cy = Double(sldSz.attribute(forName: "cy")?.stringValue ?? "") ?? (720 * emuPerPx)
@@ -131,23 +139,61 @@ public enum CanvaDocumentImporter {
 
         // ---------- C. Slides in presentation order ----------
         let slidesDir = tempDir.appendingPathComponent("ppt/slides")
-        guard let slideFiles = try? FileManager.default.contentsOfDirectory(at: slidesDir, includingPropertiesForKeys: nil) else { return nil }
-        let xmlSlides = slideFiles
+        guard isContained(slidesDir, under: tempDir),
+              let slideFiles = try? FileManager.default.contentsOfDirectory(at: slidesDir, includingPropertiesForKeys: nil) else {
+            NSLog("PPTX import: no ppt/slides directory in %@", url.lastPathComponent)
+            return nil
+        }
+        let numericSort: (URL, URL) -> Bool = {
+            let n1 = Int($0.deletingPathExtension().lastPathComponent.dropFirst("slide".count)) ?? 0
+            let n2 = Int($1.deletingPathExtension().lastPathComponent.dropFirst("slide".count)) ?? 0
+            return n1 < n2
+        }
+        var xmlSlides = slideFiles
             .filter { $0.pathExtension == "xml" && $0.lastPathComponent.hasPrefix("slide") }
-            .sorted {
-                let n1 = Int($0.deletingPathExtension().lastPathComponent.dropFirst("slide".count)) ?? 0
-                let n2 = Int($1.deletingPathExtension().lastPathComponent.dropFirst("slide".count)) ?? 0
-                return n1 < n2
+        // Presentation order comes from p:sldIdLst, not filenames — a deck with
+        // reordered slides keeps the original slideN.xml names but reorders
+        // the r:id list, so a filename sort imports pages out of order.
+        if presContained,
+           let presData = try? Data(contentsOf: presXML),
+           let presDoc = try? XMLDocument(data: presData) {
+            let presRels = parseRelationships(tempDir.appendingPathComponent("ppt/_rels/presentation.xml.rels"), tempDir: tempDir)
+            var ordered: [URL] = []
+            for sldId in presDoc.rootElement()?.elements(forName: "p:sldIdLst").first?.elements(forName: "p:sldId") ?? [] {
+                guard let rid = sldId.attribute(forName: "r:id")?.stringValue,
+                      let target = presRels[rid] else { continue }
+                // Match on filename, not URL equality — slideN.xml names are
+                // unique in the dir, and URL equality fails when the temp dir
+                // resolves differently than contentsOfDirectory reports it.
+                let name = URL(fileURLWithPath: normalizeTarget(target)).lastPathComponent
+                if let idx = xmlSlides.firstIndex(where: { $0.lastPathComponent == name }) {
+                    ordered.append(xmlSlides[idx])
+                    xmlSlides.remove(at: idx)
+                }
             }
-        guard !xmlSlides.isEmpty else { return nil }
+            // Slides unreferenced by sldIdLst (or a missing/broken rels) keep
+            // the numeric fallback so nothing is lost.
+            xmlSlides = ordered + xmlSlides.sorted(by: numericSort)
+        } else {
+            xmlSlides.sort(by: numericSort)
+        }
+        guard !xmlSlides.isEmpty else {
+            NSLog("PPTX import: no slide XML files in %@", url.lastPathComponent)
+            return nil
+        }
 
         var pages: [CanvasPage] = []
 
         for (slideIdx, slideURL) in xmlSlides.enumerated() {
-            guard var slideData = try? Data(contentsOf: slideURL) else { continue }
+            // Enumerated entries can also be symlinked paths out of the package.
+            guard isContained(slideURL, under: tempDir),
+                  var slideData = try? Data(contentsOf: slideURL) else { continue }
             slideData = Self.encodeWhitespaceOnlyTextRuns(slideData)
             guard let slideDoc = try? XMLDocument(data: slideData),
-                  let root = slideDoc.rootElement() else { continue }
+                  let root = slideDoc.rootElement() else {
+                NSLog("PPTX import: %@ failed XML parse — slide skipped", slideURL.lastPathComponent)
+                continue
+            }
             // Skip hidden slides (show="0")
             if root.attribute(forName: "show")?.stringValue == "0" { continue }
             guard let cSld = root.elements(forName: "p:cSld").first,
@@ -155,18 +201,18 @@ public enum CanvaDocumentImporter {
 
             // ---- Relationships (images, layout) ----
             let relsURL = tempDir.appendingPathComponent("ppt/slides/_rels/\(slideURL.lastPathComponent).rels")
-            let relMap = parseRelationships(relsURL)
+            let relMap = parseRelationships(relsURL, tempDir: tempDir)
 
             // ---- Layout & Master (for placeholder geometry + inherited bg) ----
             var layoutDoc: XMLDocument?
             var masterDoc: XMLDocument?
             var layoutRels: [String: String] = [:]
-            if let layoutTarget = relMap.values.first(where: { $0.contains("slideLayout") }) {
-                let layoutURL = tempDir.appendingPathComponent("ppt").appendingPathComponent(normalizeTarget(layoutTarget))
+            if let layoutTarget = relMap.values.first(where: { $0.contains("slideLayout") }),
+               let layoutURL = resolvedPackageURL(tempDir: tempDir, target: layoutTarget) {
                 layoutDoc = (try? Data(contentsOf: layoutURL)).flatMap { try? XMLDocument(data: Self.encodeWhitespaceOnlyTextRuns($0)) }
-                layoutRels = parseRelationships(layoutURL.deletingLastPathComponent().appendingPathComponent("_rels/\(layoutURL.lastPathComponent).rels"))
-                if let masterTarget = layoutRels.values.first(where: { $0.contains("slideMaster") }) {
-                    let masterURL = tempDir.appendingPathComponent("ppt").appendingPathComponent(normalizeTarget(masterTarget))
+                layoutRels = parseRelationships(layoutURL.deletingLastPathComponent().appendingPathComponent("_rels/\(layoutURL.lastPathComponent).rels"), tempDir: tempDir)
+                if let masterTarget = layoutRels.values.first(where: { $0.contains("slideMaster") }),
+                   let masterURL = resolvedPackageURL(tempDir: tempDir, target: masterTarget) {
                     masterDoc = (try? Data(contentsOf: masterURL)).flatMap { try? XMLDocument(data: Self.encodeWhitespaceOnlyTextRuns($0)) }
                 }
             }
@@ -229,7 +275,11 @@ public enum CanvaDocumentImporter {
             }
 
             // ---- Walk shape tree ----
-            func walk(_ parent: XMLElement, groupStack: [GroupTransform]) {
+            // Depth cap: group/AlternateContent nesting is user-controlled XML —
+            // a crafted deck with tens of thousands of levels would overflow
+            // the stack on recursion. Real decks nest <10 deep.
+            func walk(_ parent: XMLElement, groupStack: [GroupTransform], depth: Int = 0) {
+                guard depth < 64 else { return }
                 for child in parent.children ?? [] {
                     guard let node = child as? XMLElement else { continue }
                     switch node.name ?? "" {
@@ -239,7 +289,7 @@ public enum CanvaDocumentImporter {
                            let g = parseGroupTransform(xfrm, stack: groupStack) {
                             next = groupStack + [g]
                         }
-                        walk(node, groupStack: next)
+                        walk(node, groupStack: next, depth: depth + 1)
                     case "p:sp", "p:pic", "p:cxnSp":
                         let els = parseShape(
                             node, theme: theme, relMap: relMap, tempDir: tempDir,
@@ -252,11 +302,16 @@ public enum CanvaDocumentImporter {
                     case "p:graphicFrame":
                         let graphicData = node.elements(forName: "a:graphic").first?
                             .elements(forName: "a:graphicData").first
-                        let tbl = graphicData?.elements(forName: "a:tbl").first
-                        let diagramRelIds = graphicData?.elements(forName: "dgm:relIds").first
-                        let chartRef = graphicData?.elements(forName: "c:chart").first
+                        // graphicData payloads are searched through mc:AlternateContent /
+                        // mc:Choice / mc:Fallback wrappers — PowerPoint and third-party
+                        // producers (WPS, Aspose, PowerPoint Online) wrap a:tbl, c:chart
+                        // and p:oleObj payloads in extension blocks, which silently
+                        // dropped tables/OLE previews from the import.
+                        let tbl = graphicData.flatMap { descendant($0, name: "a:tbl") }
+                        let diagramRelIds = graphicData.flatMap { descendant($0, name: "dgm:relIds") }
+                        let chartRef = graphicData.flatMap { descendant($0, name: "c:chart") }
                         if let tbl = tbl {
-                            if let tblEls = parseTable(tbl, frameNode: node, theme: theme, tableStyles: tableStyles, groupStack: groupStack, zIndex: &zIndex) {
+                            if let tblEls = parseTable(tbl, frameNode: node, theme: theme, tableStyles: tableStyles, groupStack: groupStack, slideW: slideWpx, slideH: slideHpx, zIndex: &zIndex) {
                                 elements.append(contentsOf: tblEls)
                             }
                         } else if diagramRelIds != nil {
@@ -274,7 +329,38 @@ public enum CanvaDocumentImporter {
                             ) {
                                 elements.append(chartEl)
                             }
+                        } else if let pic = graphicData.flatMap({ descendant($0, name: "p:pic") }) {
+                            // Embedded OLE object (Visio / Excel / PDF) — the binary
+                            // can't be rendered, but producers ship a preview picture
+                            // (usually in mc:Fallback). Import it like any picture.
+                            elements.append(contentsOf: parseShape(
+                                pic, theme: theme, relMap: relMap, tempDir: tempDir,
+                                slideW: slideWpx, slideH: slideHpx,
+                                groupStack: groupStack,
+                                layoutPH: combinedPH, masterPH: masterPlaceholders,
+                                zIndex: &zIndex
+                            ))
                         }
+                    case "mc:AlternateContent":
+                        // OOXML semantics: mc:Choice elements are ALTERNATIVE
+                        // representations of the same object for different
+                        // consumer versions (Requires="a14"/"a16"/"wps"…), not
+                        // siblings — the first satisfiable Choice wins. We can't
+                        // evaluate Requires properly, so we take the first Choice
+                        // that yields elements; mc:Fallback (usually a p:pic
+                        // snapshot) is used only when no Choice parses at all.
+                        let countBefore = elements.count
+                        for choice in node.elements(forName: "mc:Choice") {
+                            walk(choice, groupStack: groupStack, depth: depth + 1)
+                            if elements.count > countBefore { break }
+                        }
+                        if elements.count == countBefore {
+                            for fallback in node.elements(forName: "mc:Fallback") {
+                                walk(fallback, groupStack: groupStack, depth: depth + 1)
+                            }
+                        }
+                    case "mc:Choice", "mc:Fallback":
+                        walk(node, groupStack: groupStack, depth: depth + 1)
                     default:
                         break
                     }
@@ -292,7 +378,10 @@ public enum CanvaDocumentImporter {
             pages.append(page)
         }
 
-        guard !pages.isEmpty else { return nil }
+        guard !pages.isEmpty else {
+            NSLog("PPTX import: zero slides parsed in %@", url.lastPathComponent)
+            return nil
+        }
         return CanvasProject(name: projectName, pages: pages)
     }
 
@@ -435,13 +524,24 @@ public enum CanvaDocumentImporter {
         let bIns = emu(bodyPr?.attribute(forName: "bIns")?.stringValue, default: 45720) / emuPerPx
         var autofitScale: Double = 1.0
         var isSpAutoFit = false
-        if let fontScale = bodyPr?.elements(forName: "a:normAutofit").first?.attribute(forName: "fontScale")?.stringValue,
-           let v = Double(fontScale), v > 0 {
-            autofitScale = v / 100000.0
+        var lnSpcReduction: Double = 0
+        if let normAutofit = bodyPr?.elements(forName: "a:normAutofit").first {
+            if let fontScale = normAutofit.attribute(forName: "fontScale")?.stringValue,
+               let v = Double(fontScale), v > 0 {
+                autofitScale = v / 100000.0
+            }
+            // lnSpcReduction additionally compresses line spacing (1/100000 of a percent)
+            if let lsr = normAutofit.attribute(forName: "lnSpcReduction")?.stringValue,
+               let v = Double(lsr), v > 0 {
+                lnSpcReduction = min(0.9, v / 100000.0)
+            }
         } else if bodyPr?.elements(forName: "a:spAutoFit").first != nil {
             isSpAutoFit = true
         }
         let anchor = bodyPr?.attribute(forName: "anchor")?.stringValue ?? "t"
+        // wrap="none" = PowerPoint "do not wrap" text box: the box auto-sizes its
+        // WIDTH to the longest line instead of wrapping (Canva "auto-width" mode).
+        let wrapNone = bodyPr?.attribute(forName: "wrap")?.stringValue == "none"
 
         // ---- Theme style references (p:style fillRef / lnRef / fontRef) ----
         let styleRef = node.elements(forName: "p:style").first
@@ -638,11 +738,12 @@ public enum CanvaDocumentImporter {
                 x: x, y: y, w: w, h: h, rotation: rotation,
                 lIns: lIns, rIns: rIns, tIns: tIns, bIns: bIns,
                 autofitScale: autofitScale, anchor: anchor,
-                isSpAutoFit: isSpAutoFit,
+                isSpAutoFit: isSpAutoFit, wrapNone: wrapNone,
+                lnSpcReduction: lnSpcReduction,
                 phType: phType, inheritedSizePt: inheritedSizePt,
                 majorFont: theme.majorFont, minorFont: theme.minorFont,
                 styleDefaultColor: styleTextColor,
-                slideW: slideW, zIndex: &zIndex
+                slideW: slideW, slideH: slideH, zIndex: &zIndex
             )
             // Vertical text direction (bodyPr vert="vert" / "vert270" / "eaVert"):
             // approximate by rotating the text element and swapping its frame.
@@ -673,11 +774,14 @@ public enum CanvaDocumentImporter {
         autofitScale: Double,
         anchor: String,
         isSpAutoFit: Bool = false,
+        wrapNone: Bool = false,
+        lnSpcReduction: Double = 0,
         phType: String?,
         inheritedSizePt: Double?,
         majorFont: String, minorFont: String,
         styleDefaultColor: ResolvedColor?,
         slideW: Double,
+        slideH: Double = .greatestFiniteMagnitude,
         zIndex: inout Int
     ) -> [CanvasElement] {
 
@@ -686,17 +790,42 @@ public enum CanvaDocumentImporter {
             var fmt: RunFormat
             var align: TextAlignmentKind
             var spacingPt: Double? // exact line height in pt (spcPts)
+            var marL: Double = 0      // paragraph left margin, px (a:pPr marL)
+            var marR: Double = 0      // paragraph right margin, px (a:pPr marR)
+            var indent: Double = 0    // first-line indent, px — negative = hanging bullet
+            var spaceBefore: Double?  // a:spcBef — pt (>0) or pct encoded negative
+            var spaceAfter: Double?   // a:spcAft — same encoding
         }
 
         var paragraphs: [ParaLine] = []
         var autoNumCounters: [Int: Int] = [:]
+        /// Standard roman numerals for 1…3999. Larger/invalid inputs fall back
+        /// to arabic — the OLD implementation only had symbols up to X and
+        /// looped `v -= 1`, so a crafted startAt wedged the import.
         func romanNumeral(_ n: Int) -> String {
-            let pairs: [(Int, String)] = [(10, "X"), (9, "IX"), (5, "V"), (4, "IV"), (1, "I")]
+            guard n >= 1, n <= 3999 else { return "\(n)" }
+            let pairs: [(Int, String)] = [(1000, "M"), (900, "CM"), (500, "D"), (400, "CD"),
+                                          (100, "C"), (90, "XC"), (50, "L"), (40, "XL"),
+                                          (10, "X"), (9, "IX"), (5, "V"), (4, "IV"), (1, "I")]
             var v = n, out = ""
             for (val, sym) in pairs {
                 while v >= val { out += sym; v -= val }
             }
             return out
+        }
+        /// Bijective base-26 (a…z, aa…az, ba…): the OLD `UInt8(96 + n)` both
+        /// trapped on values outside 0–255 and emitted `{`/`|` past z.
+        func alphaNumeral(_ n: Int, upper: Bool) -> String {
+            guard n >= 1 else { return "\(n)" }
+            var v = n, chars: [UInt8] = []
+            while v > 0 {
+                v -= 1
+                chars.append(UInt8(v % 26))
+                v /= 26
+            }
+            return String(chars.reversed().map {
+                Character(UnicodeScalar((upper ? 65 : 97) + $0))
+            })
         }
 
         // This shape's own list style (a:lstStyle lvl1 defRPr) is another size fallback
@@ -727,19 +856,27 @@ public enum CanvaDocumentImporter {
                 bullet = mapBulletChar(rawChar, buFont)
             } else if let buAutoNum = pPr?.elements(forName: "a:buAutoNum").first {
                 let type = buAutoNum.attribute(forName: "type")?.stringValue ?? "arabicPeriod"
+                // startAt restarts the list counter (e.g. a second numbered group
+                // continuing at 4 instead of 1). Clamped — an unbounded startAt
+                // could overflow the counter or wedge the numeral formatters.
+                if let startAt = Int(buAutoNum.attribute(forName: "startAt")?.stringValue ?? "") {
+                    autoNumCounters[lvl] = min(max(startAt, 1), 100000) - 1
+                }
                 autoNumCounters[lvl, default: 0] += 1
                 // Reset deeper-level counters when a shallower level appears
                 for k in autoNumCounters.keys where k > lvl { autoNumCounters[k] = 0 }
                 let n = autoNumCounters[lvl]!
                 switch type {
                 case "alphaLcPeriod", "alphaLcParenBoth", "alphaLcParenR":
-                    bullet = String(Character(UnicodeScalar(UInt8(96 + n)))) + "."
+                    bullet = alphaNumeral(n, upper: false) + "."
                 case "alphaUcPeriod", "alphaUcParenBoth", "alphaUcParenR":
-                    bullet = String(Character(UnicodeScalar(UInt8(64 + n)))) + "."
+                    bullet = alphaNumeral(n, upper: true) + "."
                 case "romanLcPeriod":
-                    bullet = romanNumeral(n) + "."
+                    bullet = romanNumeral(n).lowercased() + "."
                 case "romanUcPeriod":
-                    bullet = romanNumeral(n).uppercased() + "."
+                    bullet = romanNumeral(n) + "."
+                case "arabicPlain":
+                    bullet = "\(n)"
                 default:
                     bullet = "\(n)."
                 }
@@ -755,6 +892,24 @@ public enum CanvaDocumentImporter {
                       let pct = Double(spcPct) {
                 spacingPt = -pct / 100000.0 // negative encodes percentage for later resolution
             }
+
+            // Paragraph margins & spacing (a:pPr marL/marR/indent, a:spcBef/a:spcAft).
+            // Without these, bulleted/indented lines start flush at the box edge and
+            // collide with bullet glyphs or left-edge accents — real decks rely on
+            // marL+hanging indent for every list.
+            let paraMarL = emu(pPr?.attribute(forName: "marL")?.stringValue, default: 0) / emuPerPx
+            let paraMarR = emu(pPr?.attribute(forName: "marR")?.stringValue, default: 0) / emuPerPx
+            let paraIndent = emu(pPr?.attribute(forName: "indent")?.stringValue, default: 0) / emuPerPx
+            func paraSpacing(_ elName: String) -> Double? {
+                let el = pPr?.elements(forName: elName).first
+                if let v = el?.elements(forName: "a:spcPts").first?.attribute(forName: "val")?.stringValue,
+                   let d = Double(v) { return d / 100.0 }
+                if let v = el?.elements(forName: "a:spcPct").first?.attribute(forName: "val")?.stringValue,
+                   let d = Double(v) { return -d / 100000.0 }
+                return nil
+            }
+            let spaceBefore = paraSpacing("a:spcBef")
+            let spaceAfter = paraSpacing("a:spcAft")
 
             // Paragraph-level default run properties (defRPr)
             var paraDefault = RunFormat()
@@ -787,6 +942,14 @@ public enum CanvaDocumentImporter {
                         lineFmt.textLen = runText.count
                     }
                     hasRun = true
+                case "a:fld":
+                    // Field (slide number / date / footer): a:t carries the
+                    // cached rendered text — the OLD default case dropped it.
+                    let fldText = decodeTextWhitespace(el.elements(forName: "a:t").first?.stringValue ?? "")
+                    if !fldText.isEmpty {
+                        lineText += fldText
+                        hasRun = true
+                    }
                 case "a:br":
                     lineText += "\n"
                     // A break also resets the dominant-run length comparison baseline
@@ -797,11 +960,17 @@ public enum CanvaDocumentImporter {
             }
 
             // Preserve intentional empty paragraphs (vertical spacing in real decks)
-            if !lineText.trimmingCharacters(in: .whitespaces).isEmpty {
+            if !lineText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 let prefixed = bullet != nil ? "\(bullet!) \(lineText)" : lineText
-                paragraphs.append(ParaLine(text: prefixed, fmt: lineFmt, align: align, spacingPt: spacingPt))
-            } else if !paragraphs.isEmpty && hasRun == false && lineText.isEmpty {
-                paragraphs.append(ParaLine(text: "", fmt: lineFmt, align: align, spacingPt: spacingPt))
+                paragraphs.append(ParaLine(text: prefixed, fmt: lineFmt, align: align, spacingPt: spacingPt,
+                                           marL: paraMarL, marR: paraMarR, indent: paraIndent,
+                                           spaceBefore: spaceBefore, spaceAfter: spaceAfter))
+            } else if !paragraphs.isEmpty && hasRun == false {
+                // A paragraph with no runs — including one holding only <a:br/>
+                // (lineText == "\n") — is an intentional blank line.
+                paragraphs.append(ParaLine(text: "", fmt: lineFmt, align: align, spacingPt: spacingPt,
+                                           marL: paraMarL, marR: paraMarR, indent: paraIndent,
+                                           spaceBefore: spaceBefore, spaceAfter: spaceAfter))
             }
         }
 
@@ -825,6 +994,11 @@ public enum CanvaDocumentImporter {
             var align: TextAlignmentKind
             var lineSpacing: Double
             var letterSpacing: Double = 0
+            var marL: Double = 0
+            var marR: Double = 0
+            var indent: Double = 0
+            var spaceBefore: Double = 0 // px
+            var spaceAfter: Double = 0  // px
             var measuredHeight: Double = 0
         }
 
@@ -855,6 +1029,13 @@ public enum CanvaDocumentImporter {
                     lineSpacing = max(0, (fontSizePx * 1.21) * (-sp - 1.0))
                 }
             }
+            // normAutofit lnSpcReduction compresses whatever spacing we resolved
+            if lnSpcReduction > 0 { lineSpacing *= (1.0 - lnSpcReduction) }
+            // spcBef/spcAft → px (pct is relative to the paragraph's line height)
+            func resolveParaSpace(_ raw: Double?) -> Double {
+                guard let raw = raw else { return 0 }
+                return raw >= 0 ? raw * ptToPx : fontSizePx * 1.21 * (-raw)
+            }
             return ResolvedPara(
                 text: para.text,
                 fontSizePx: fontSizePx,
@@ -865,7 +1046,12 @@ public enum CanvaDocumentImporter {
                 color: resolvedColorFor(fmt),
                 align: para.align,
                 lineSpacing: lineSpacing,
-                letterSpacing: letterSpacing
+                letterSpacing: letterSpacing,
+                marL: para.marL,
+                marR: para.marR,
+                indent: para.indent,
+                spaceBefore: resolveParaSpace(para.spaceBefore),
+                spaceAfter: resolveParaSpace(para.spaceAfter)
             )
         }
 
@@ -874,13 +1060,18 @@ public enum CanvaDocumentImporter {
         for (idx, p) in paragraphs.enumerated() {
             if p.text.isEmpty {
                 if let next = paragraphs.dropFirst(idx + 1).first(where: { !$0.text.isEmpty }) {
-                    var r = resolvePara(ParaLine(text: "", fmt: next.fmt, align: p.align, spacingPt: p.spacingPt))
+                    var r = resolvePara(ParaLine(text: "", fmt: next.fmt, align: p.align, spacingPt: p.spacingPt,
+                                                marL: p.marL, marR: p.marR, indent: p.indent,
+                                                spaceBefore: p.spaceBefore, spaceAfter: p.spaceAfter))
                     r.text = ""
                     resolvedParas.append(r)
                 } else if let prev = resolvedParas.last {
                     resolvedParas.append(prev)
                     resolvedParas[resolvedParas.count - 1].text = ""
                     resolvedParas[resolvedParas.count - 1].align = p.align
+                    resolvedParas[resolvedParas.count - 1].marL = p.marL
+                    resolvedParas[resolvedParas.count - 1].marR = p.marR
+                    resolvedParas[resolvedParas.count - 1].indent = p.indent
                 }
             } else {
                 resolvedParas.append(resolvePara(p))
@@ -892,51 +1083,26 @@ public enum CanvaDocumentImporter {
         let tw = max(24, w - lIns - rIns)
         let th = max(18, h - tIns - bIns)
 
-        // --- spAutoFit: shrink to fit if the text overflows the box (PowerPoint Canva behavior) ---
-        if isSpAutoFit {
-            var maxSingleLineWidth: Double = 0
-            var currentTotalH: Double = 0
-            for r in resolvedParas {
-                let h = measureTextBlockHeight(
-                    text: r.text.isEmpty ? " " : r.text,
-                    fontFamily: r.fontFamily,
-                    fontSizePx: r.fontSizePx,
-                    fontWeight: r.fontWeight,
-                    italic: r.italic,
-                    lineSpacing: r.lineSpacing,
-                    letterSpacing: r.letterSpacing,
-                    width: tw,
-                    alignment: r.align
-                )
-                currentTotalH += h
-                let lw = measureSingleLineWidth(
-                    text: r.text.isEmpty ? " " : r.text,
-                    fontFamily: r.fontFamily,
-                    fontSizePx: r.fontSizePx,
-                    fontWeight: r.fontWeight,
-                    italic: r.italic,
-                    letterSpacing: r.letterSpacing
-                )
-                maxSingleLineWidth = max(maxSingleLineWidth, lw)
-            }
-            let scaleY = currentTotalH > th ? (th / currentTotalH) : 1.0
-            let scaleX = maxSingleLineWidth > tw ? (tw / maxSingleLineWidth) : 1.0
-            let shrink = min(scaleX, scaleY)
-            if shrink < 0.98 {
-                // Clamp to avoid microscopic text (PowerPoint's minimum ~ 40% of original)
-                let clamped = max(0.4, shrink)
-                for i in resolvedParas.indices {
-                    resolvedParas[i].fontSizePx *= clamped
-                    resolvedParas[i].letterSpacing *= clamped
-                    resolvedParas[i].lineSpacing *= clamped
-                }
-            }
-        }
+        // --- spAutoFit ("Resize shape to fit text") grows the BOX, not the font ---
+        // PowerPoint semantics: <a:spAutoFit/> keeps the font size and enlarges
+        // the shape's height until all text fits; <a:normAutofit fontScale> is
+        // the "shrink text" mode and is already folded into fontSizePx above.
+        // The old code shrank fonts here (down to 40%), which produced
+        // microscopic text in boxes that were meant to grow — that was the
+        // "imported textbox too small" bug. Growth is applied at emit time.
+        _ = isSpAutoFit
 
         // Measure every paragraph with TextKit so wrapped lines are counted correctly
         // (the previous single-line estimate caused overlapping text on wrapped paragraphs).
+        // wrap="none" boxes never wrap: measure at an effectively unbounded width
+        // and track the longest line so the emitted box can grow horizontally.
+        var maxLineW: Double = 0
         for i in resolvedParas.indices {
             let r = resolvedParas[i]
+            // Paragraph margins shrink the wrap width — PowerPoint wraps text at
+            // tw − marL − marR (hanging indents get a slightly wider first line;
+            // we use the continuation width so nothing underflows).
+            let paraWrapW = max(24, tw - r.marL - min(0, r.indent) - r.marR)
             let h = measureTextBlockHeight(
                 text: r.text.isEmpty ? " " : r.text,
                 fontFamily: r.fontFamily,
@@ -945,10 +1111,25 @@ public enum CanvaDocumentImporter {
                 italic: r.italic,
                 lineSpacing: r.lineSpacing,
                 letterSpacing: r.letterSpacing,
-                width: tw,
+                width: wrapNone ? 1_000_000 : paraWrapW,
                 alignment: r.align
             )
             resolvedParas[i].measuredHeight = h
+            if wrapNone || isSpAutoFit {
+                // Track longest unwrapped line for auto-width boxes
+                var widestInPara: Double = 0
+                for segment in r.text.components(separatedBy: "\n") {
+                    widestInPara = max(widestInPara, measureSingleLineWidth(
+                        text: segment.isEmpty ? " " : segment,
+                        fontFamily: r.fontFamily,
+                        fontSizePx: r.fontSizePx,
+                        fontWeight: r.fontWeight,
+                        italic: r.italic,
+                        letterSpacing: r.letterSpacing
+                    ))
+                }
+                maxLineW = max(maxLineW, widestInPara)
+            }
         }
 
         // Merge consecutive paragraphs that share identical formatting into single text
@@ -958,17 +1139,22 @@ public enum CanvaDocumentImporter {
             var text: String = ""
             var height: Double = 0
             var para: ResolvedPara? = nil
+            var paraCount: Int = 1
         }
         var blocks: [EmittedBlock] = []
         func sameFormat(_ a: ResolvedPara, _ b: ResolvedPara) -> Bool {
             abs(a.fontSizePx - b.fontSizePx) < 0.5 && a.fontFamily == b.fontFamily &&
             a.fontWeight == b.fontWeight && a.italic == b.italic && a.underline == b.underline &&
-            a.color == b.color && a.align == b.align && abs(a.lineSpacing - b.lineSpacing) < 0.5 && abs(a.letterSpacing - b.letterSpacing) < 0.1
+            a.color == b.color && a.align == b.align && abs(a.lineSpacing - b.lineSpacing) < 0.5 && abs(a.letterSpacing - b.letterSpacing) < 0.1 &&
+            abs(a.marL - b.marL) < 0.5 && abs(a.marR - b.marR) < 0.5 && abs(a.indent - b.indent) < 0.5 &&
+            abs(a.spaceBefore - b.spaceBefore) < 0.5 && abs(a.spaceAfter - b.spaceAfter) < 0.5
         }
         for r in resolvedParas {
             if var last = blocks.last, let lp = last.para, sameFormat(lp, r) {
                 last.text += (last.text.isEmpty ? "" : "\n") + r.text
-                last.height += r.measuredHeight
+                // Interior paragraph gap = prev spcAft + cur spcBef (uniform by sameFormat)
+                last.height += r.measuredHeight + r.spaceBefore + r.spaceAfter
+                last.paraCount += 1
                 blocks[blocks.count - 1] = last
             } else {
                 var b = EmittedBlock()
@@ -979,7 +1165,106 @@ public enum CanvaDocumentImporter {
             }
         }
 
-        let totalH = resolvedParas.reduce(0.0) { $0 + $1.measuredHeight }
+        let totalH = resolvedParas.reduce(0.0) { $0 + $1.measuredHeight + $1.spaceBefore + $1.spaceAfter }
+
+        let pptAnchor: TextVerticalAnchor = {
+            switch anchor {
+            case "ctr": return .center
+            case "b": return .bottom
+            default: return .top
+            }
+        }()
+
+        // The common case (uniform formatting → one block): keep the ORIGINAL
+        // PowerPoint frame exactly — position, size, insets and vertical anchor —
+        // so the Pluma transformer matches the source box 1:1 and nothing is
+        // "too small". The renderer flows the text inside the insets and honors
+        // the anchor, Canva-style. Only grow when content overflows the box.
+        if blocks.count == 1, let only = blocks.first, let p = only.para,
+           !only.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            zIndex += 1
+            // Fold the (uniform) paragraph margins into the element's insets so the
+            // renderer/indents agree; hanging bullets use marL+indent as the run
+            // origin so the prepended bullet lands in the hang position.
+            let padL = lIns + p.marL + min(0, p.indent)
+            let padR = rIns + p.marR
+            // First/last paragraph spacing pads the box interior top/bottom.
+            let padT = tIns + (resolvedParas.first?.spaceBefore ?? 0)
+            let padB = bIns + (resolvedParas.last?.spaceAfter ?? 0)
+            // Merged multi-paragraph blocks render the uniform para gap as extra
+            // line spacing between the "\n" boundaries.
+            let paraGapLS = only.paraCount > 1 ? p.spaceBefore + p.spaceAfter : 0
+            let fittedFull = only.height + padT + padB
+            var emitX = x
+            var emitY = y
+            var emitW = w
+            var emitH = max(h, ceil(fittedFull))
+
+            // wrap="none": grow the box width to the longest line instead of
+            // clipping — PowerPoint auto-sizes these boxes horizontally.
+            if wrapNone {
+                let neededW = ceil(maxLineW + padL + padR)
+                if neededW > emitW {
+                    let extra = neededW - emitW
+                    // Grow around the text anchor like PowerPoint does:
+                    // centered text expands both ways, right-aligned grows left.
+                    if p.align == .center { emitX -= extra / 2 }
+                    else if p.align == .right { emitX -= extra }
+                    emitW = neededW
+                }
+            }
+
+            // Overflow growth respects the vertical anchor: a centered box
+            // expands symmetrically, a bottom-anchored box grows upward, so the
+            // visual anchor point stays glued where PowerPoint had it.
+            if emitH > h {
+                let extra = emitH - h
+                if anchor == "ctr" { emitY -= extra / 2 }
+                else if anchor == "b" { emitY -= extra }
+            }
+
+            // Keep grown boxes inside the slide when they started on-slide:
+            // a text run taller than the page can't fully fit anyway, and a
+            // frame hanging far off-canvas is unusable in the editor. The
+            // renderer doesn't clip text, so any residual overflow still draws
+            // (PowerPoint spills the same way past the shape's frame). The box's
+            // leading edge stays glued where the deck put it; we only cap the
+            // trailing edge at the slide bound.
+            if emitX >= 0, emitX < slideW, emitX + emitW > slideW {
+                emitW = slideW - emitX
+            }
+            if emitY >= 0, emitY < slideH, emitY + emitH > slideH {
+                emitH = slideH - emitY
+            }
+
+            return [CanvasElement(
+                name: "Text: \(only.text.prefix(20))",
+                payload: .text(TextContent(
+                    text: only.text,
+                    fontFamily: p.fontFamily,
+                    fontSize: p.fontSizePx,
+                    fontWeight: p.fontWeight,
+                    isItalic: p.italic,
+                    isUnderlined: p.underline,
+                    alignment: p.align,
+                    textColor: p.color,
+                    letterSpacing: p.letterSpacing,
+                    lineSpacing: p.lineSpacing + paraGapLS,
+                    insetLeft: padL,
+                    insetRight: padR,
+                    insetTop: padT,
+                    insetBottom: padB,
+                    verticalAnchor: pptAnchor
+                )),
+                x: emitX, y: emitY,
+                width: emitW, height: emitH,
+                rotation: rotation,
+                zIndex: zIndex
+            )]
+        }
+
+        // Mixed formatting → stacked per-format boxes (positions baked, as
+        // before). Rare in practice; content stays correct and editable.
 
         // Vertical anchoring: PowerPoint vertically centers/bottom-aligns text within the box
         var cursorY = y + tIns
@@ -989,12 +1274,23 @@ public enum CanvaDocumentImporter {
         }
 
         var results: [CanvasElement] = []
+        // wrap="none": emit boxes wide enough for the longest line (no wrap).
+        let emitW = wrapNone ? max(tw, ceil(maxLineW)) : tw
         for b in blocks {
+            // Paragraph spacing advances the cursor; the block itself keeps the
+            // ceiled measured height so stacked blocks never overlap fractionally.
+            cursorY += b.para?.spaceBefore ?? 0
+            let blockH = max(18, ceil(b.height))
             guard let p = b.para, !b.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                cursorY += b.height
+                cursorY += blockH + (b.para?.spaceAfter ?? 0)
                 continue
             }
             zIndex += 1
+            // Paragraph margins shift the block inside the text area; hanging
+            // bullets use marL+indent so the bullet lands in the hang position.
+            let blockX = tx + p.marL + min(0, p.indent)
+            let blockW = max(24, emitW - p.marL - min(0, p.indent) - p.marR)
+            let paraGapLS = b.paraCount > 1 ? p.spaceBefore + p.spaceAfter : 0
             results.append(CanvasElement(
                 name: "Text: \(b.text.prefix(20))",
                 payload: .text(TextContent(
@@ -1007,19 +1303,21 @@ public enum CanvaDocumentImporter {
                     alignment: p.align,
                     textColor: p.color,
                     letterSpacing: p.letterSpacing,
-                    lineSpacing: p.lineSpacing
+                    lineSpacing: p.lineSpacing + paraGapLS
                 )),
-                x: tx, y: cursorY,
-                width: tw, height: max(18, b.height),
+                x: blockX, y: cursorY,
+                width: blockW, height: blockH,
                 rotation: rotation,
                 zIndex: zIndex
             ))
-            cursorY += b.height
+            cursorY += blockH + p.spaceAfter
         }
         return results
     }
 
     /// Measures single-line width for spAutoFit calculations.
+    /// Delegates to the shared TextMeasurement engine so import, canvas
+    /// display, editor and live-resize auto-fit all agree (Canva/PPTX parity).
     static func measureSingleLineWidth(
         text: String,
         fontFamily: String,
@@ -1028,28 +1326,19 @@ public enum CanvaDocumentImporter {
         italic: Bool,
         letterSpacing: Double
     ) -> Double {
-        let weight: NSFont.Weight
-        switch fontWeight {
-        case ..<250: weight = .ultraLight
-        case ..<350: weight = .light
-        case ..<450: weight = .regular
-        case ..<550: weight = .medium
-        case ..<650: weight = .semibold
-        case ..<750: weight = .bold
-        case ..<850: weight = .heavy
-        default: weight = .black
-        }
-        var base: NSFont? = NSFont(name: fontFamily, size: fontSizePx)
-        if base == nil { base = NSFont.systemFont(ofSize: fontSizePx, weight: weight) }
-        else if fontWeight >= 600 { base = NSFontManager().convert(base!, toHaveTrait: .boldFontMask) }
-        var font = base!
-        if italic { font = NSFontManager().convert(font, toHaveTrait: .italicFontMask) }
-        let attrs: [NSAttributedString.Key: Any] = [.font: font, .kern: CGFloat(letterSpacing)]
-        return Double((text as NSString).size(withAttributes: attrs).width)
+        TextMeasurement.singleLineWidth(
+            text: text,
+            fontFamily: fontFamily,
+            fontSize: fontSizePx,
+            fontWeight: fontWeight,
+            italic: italic,
+            letterSpacing: letterSpacing
+        )
     }
 
-    /// Measures the rendered height of a (possibly multi-line, wrapping) text block using
-    /// TextKit with the same font/spacing the canvas renderer uses. Returns points.
+    /// Measures the rendered height of a (possibly multi-line, wrapping) text block
+    /// using the shared TextMeasurement engine — the same font/spacing the canvas
+    /// renderer and editor use. Returns points.
     static func measureTextBlockHeight(
         text: String,
         fontFamily: String,
@@ -1061,52 +1350,17 @@ public enum CanvaDocumentImporter {
         width: Double,
         alignment: TextAlignmentKind
     ) -> Double {
-        let weight: NSFont.Weight
-        switch fontWeight {
-        case ..<250: weight = .ultraLight
-        case ..<350: weight = .light
-        case ..<450: weight = .regular
-        case ..<550: weight = .medium
-        case ..<650: weight = .semibold
-        case ..<750: weight = .bold
-        case ..<850: weight = .heavy
-        default: weight = .black
-        }
-        var base: NSFont? = NSFont(name: fontFamily, size: fontSizePx)
-        if base == nil {
-            base = NSFont.systemFont(ofSize: fontSizePx, weight: weight)
-        } else if fontWeight >= 600 || fontWeight <= 300 {
-            // Custom font families usually ship a single weight; let AppKit synthesize bold.
-            if fontWeight >= 600 {
-                base = NSFontManager().convert(base!, toHaveTrait: .boldFontMask)
-            }
-        }
-        var font = base!
-        if italic {
-            font = NSFontManager().convert(font, toHaveTrait: .italicFontMask)
-        }
-
-        let para = NSMutableParagraphStyle()
-        para.lineSpacing = CGFloat(lineSpacing)
-        switch alignment {
-        case .center: para.alignment = .center
-        case .right: para.alignment = .right
-        case .justified: para.alignment = .justified
-        case .left: para.alignment = .left
-        }
-
-        let storage = NSTextStorage(string: text, attributes: [
-            .font: font,
-            .paragraphStyle: para,
-            .kern: CGFloat(letterSpacing)
-        ])
-        let manager = NSLayoutManager()
-        storage.addLayoutManager(manager)
-        let container = NSTextContainer(size: NSSize(width: max(10, width), height: .greatestFiniteMagnitude))
-        container.lineFragmentPadding = 0
-        manager.addTextContainer(container)
-        let used = manager.usedRect(for: container).height
-        return max(fontSizePx * 1.15, Double(used))
+        TextMeasurement.blockHeight(
+            text: text,
+            fontFamily: fontFamily,
+            fontSizePx: fontSizePx,
+            fontWeight: fontWeight,
+            italic: italic,
+            lineSpacing: lineSpacing,
+            letterSpacing: letterSpacing,
+            width: width,
+            alignment: alignment
+        )
     }
 
     /// Maps Wingdings/Webdings/Symbol bullet glyphs (private-use codepoints that render
@@ -1360,6 +1614,20 @@ public enum CanvaDocumentImporter {
         case "hexagon": return .polygon
         case "mathPlus", "plus": return .cross
         case "lightningBolt": return .lightning
+        case "can", "flowChartMagneticDisk", "flowChartMagneticDrum", "flowChartDatabase":
+            return .database
+        case "flowChartTerminator", "flowChartPredefinedProcess", "pill": return .pill
+        case "flowChartDecision": return .diamond
+        case "flowChartConnector", "flowChartSummingJunction": return .circle
+        case "flowChartDocument", "flowChartMultidocument", "foldedCorner", "document":
+            return .roundedRectangle
+        case "cube", "bevel", "frame", "halfFrame", "corner": return .rectangle
+        case "teardrop": return .heart
+        case "arc", "blockArc", "chord", "pie": return .circle
+        case "leftArrow", "upArrow", "downArrow", "leftRightArrow", "upDownArrow",
+             "bentArrow", "bentUpArrow", "curvedDownArrow", "stripedRightArrow",
+             "quadArrow", "leftRightUpArrow", "downArrowCallout", "upArrowCallout":
+            return .arrow
         case "line", "straightConnector1", "bentConnector2", "bentConnector3":
             return h <= 4 || w <= 4 ? .line : .rectangle
         default: return .rectangle
@@ -1392,7 +1660,7 @@ public enum CanvaDocumentImporter {
         name: String,
         zIndex: Int
     ) -> CanvasElement? {
-        let imgURL = tempDir.appendingPathComponent("ppt").appendingPathComponent(normalizeTarget(target))
+        guard let imgURL = resolvedPackageURL(tempDir: tempDir, target: target) else { return nil }
         let ext = imgURL.pathExtension.lowercased()
 
         var nsImage = NSImage(contentsOf: imgURL)
@@ -1710,8 +1978,8 @@ public enum CanvaDocumentImporter {
         groupStack: [GroupTransform],
         zIndex: inout Int
     ) -> CanvasElement? {
-        let chartURL = tempDir.appendingPathComponent("ppt").appendingPathComponent(normalizeTarget(chartTarget))
-        guard let data = try? Data(contentsOf: chartURL),
+        guard let chartURL = resolvedPackageURL(tempDir: tempDir, target: chartTarget),
+              let data = try? Data(contentsOf: chartURL),
               let doc = try? XMLDocument(data: data),
               let root = doc.rootElement() else { return nil }
 
@@ -1733,8 +2001,8 @@ public enum CanvaDocumentImporter {
         } else if let area = plotArea.elements(forName: "c:areaChart").first {
             seriesElems = area.elements(forName: "c:ser")
             kind = .area
-        } else if plotArea.elements(forName: "c:scatterChart").first != nil {
-            seriesElems = plotArea.elements(forName: "c:scatterChart").first!.elements(forName: "c:ser")
+        } else if let scatter = plotArea.elements(forName: "c:scatterChart").first {
+            seriesElems = scatter.elements(forName: "c:ser")
             kind = .scatter
         }
         guard !seriesElems.isEmpty else { return nil }
@@ -1793,14 +2061,15 @@ public enum CanvaDocumentImporter {
         }
 
         // Geometry (EMU → px, group-aware)
-        guard let xfrm = frameNode.elements(forName: "p:xfrm").first else { return nil }
+        guard let xfrm = frameNode.elements(forName: "p:xfrm").first
+            ?? frameNode.elements(forName: "a:xfrm").first else { return nil }
         let gx = emu(xfrm.elements(forName: "a:off").first?.attribute(forName: "x")?.stringValue)
         let gy = emu(xfrm.elements(forName: "a:off").first?.attribute(forName: "y")?.stringValue)
         let gw = emu(xfrm.elements(forName: "a:ext").first?.attribute(forName: "cx")?.stringValue)
         let gh = emu(xfrm.elements(forName: "a:ext").first?.attribute(forName: "cy")?.stringValue)
         guard gw > 40, gh > 40 else { return nil }
         var rect = CGRect(x: gx, y: gy, width: gw, height: gh)
-        for g in groupStack.reversed() { rect = g.apply(rect) }
+        if let g = groupStack.last { rect = g.apply(rect) } // affine already concatenates ancestors
         let fx = rect.minX / emuPerPx
         let fy = rect.minY / emuPerPx
         let fw = rect.width / emuPerPx
@@ -1999,7 +2268,7 @@ public enum CanvaDocumentImporter {
                             points.append(CGPoint(x: cx, y: Y(cy)))
                         }
                         if kind == .area && !points.isEmpty {
-                            var areaPath = CGMutablePath()
+                            let areaPath = CGMutablePath()
                             areaPath.move(to: CGPoint(x: points[0].x, y: zeroY))
                             for p in points { areaPath.addLine(to: p) }
                             areaPath.addLine(to: CGPoint(x: points[points.count - 1].x, y: zeroY))
@@ -2104,8 +2373,8 @@ public enum CanvaDocumentImporter {
         zIndex: inout Int
     ) -> [CanvasElement]? {
         guard let dmId = relIds.attribute(forName: "r:dm")?.stringValue,
-              let dataTarget = relMap[dmId] else { return nil }
-        let dataURL = tempDir.appendingPathComponent("ppt").appendingPathComponent(normalizeTarget(dataTarget))
+              let dataTarget = relMap[dmId],
+              let dataURL = resolvedPackageURL(tempDir: tempDir, target: dataTarget) else { return nil }
         guard let data = try? Data(contentsOf: dataURL),
               let doc = try? XMLDocument(data: data),
               let root = doc.rootElement() else { return nil }
@@ -2115,7 +2384,6 @@ public enum CanvaDocumentImporter {
         for pt in root.elements(forName: "dgm:ptLst").first?.elements(forName: "dgm:pt") ?? [] {
             let type = pt.attribute(forName: "type")?.stringValue ?? "node"
             guard type == "node" else { continue }
-            let runs = pt.elements(forName: "dgm:t").first?.elements(forName: "a:bodyP").first
             let body = pt.elements(forName: "dgm:t").first
             var line = ""
             for r in body?.elements(forName: "a:p") ?? [] {
@@ -2129,7 +2397,8 @@ public enum CanvaDocumentImporter {
         }
         guard !texts.isEmpty else { return nil }
 
-        guard let xfrm = frameNode.elements(forName: "p:xfrm").first else { return nil }
+        guard let xfrm = frameNode.elements(forName: "p:xfrm").first
+            ?? frameNode.elements(forName: "a:xfrm").first else { return nil }
         let gx = emu(xfrm.elements(forName: "a:off").first?.attribute(forName: "x")?.stringValue)
         let gy = emu(xfrm.elements(forName: "a:off").first?.attribute(forName: "y")?.stringValue)
         let gw = emu(xfrm.elements(forName: "a:ext").first?.attribute(forName: "cx")?.stringValue)
@@ -2137,7 +2406,7 @@ public enum CanvaDocumentImporter {
         guard gw > 0, gh > 0 else { return nil }
 
         var rect = CGRect(x: gx, y: gy, width: gw, height: gh)
-        for g in groupStack.reversed() { rect = g.apply(rect) }
+        if let g = groupStack.last { rect = g.apply(rect) } // affine already concatenates ancestors
         let fx = rect.minX / emuPerPx
         let fy = rect.minY / emuPerPx
         let fw = rect.width / emuPerPx
@@ -2204,7 +2473,8 @@ public enum CanvaDocumentImporter {
     private static func parseTableStyles(tempDir: URL, theme: PPTXTheme) -> [String: PPTXTableStyle] {
         var result: [String: PPTXTableStyle] = [:]
         let url = tempDir.appendingPathComponent("ppt/tableStyles.xml")
-        guard let data = try? Data(contentsOf: url),
+        guard isContained(url, under: tempDir),
+              let data = try? Data(contentsOf: url),
               let doc = try? XMLDocument(data: data),
               let root = doc.rootElement() else { return result }
 
@@ -2246,27 +2516,40 @@ public enum CanvaDocumentImporter {
         theme: PPTXTheme,
         tableStyles: [String: PPTXTableStyle],
         groupStack: [GroupTransform],
+        slideW: Double,
+        slideH: Double,
         zIndex: inout Int
     ) -> [CanvasElement]? {
-        guard let xfrm = frameNode.elements(forName: "p:xfrm").first else { return nil }
+        // Column widths & row heights (EMU) — read first: when the frame has no
+        // xfrm (schema-optional on p:graphicFrame) the declared grid is the only
+        // size information available, and dropping the table is worse than
+        // placing it at the origin.
+        let colWidths = tbl.elements(forName: "a:tblGrid").first?.elements(forName: "a:gridCol").compactMap { Double($0.attribute(forName: "w")?.stringValue ?? "") } ?? []
+        let totalColW = colWidths.reduce(0, +)
+        guard !colWidths.isEmpty, totalColW > 0 else { return nil }
+        let rows = tbl.elements(forName: "a:tr")
+        let declaredRowHeights = rows.map { Double($0.attribute(forName: "h")?.stringValue ?? "") ?? 0 }
+        let declaredRowH = declaredRowHeights.reduce(0, +)
 
-        let gx = emu(xfrm.elements(forName: "a:off").first?.attribute(forName: "x")?.stringValue)
-        let gy = emu(xfrm.elements(forName: "a:off").first?.attribute(forName: "y")?.stringValue)
-        let gw = emu(xfrm.elements(forName: "a:ext").first?.attribute(forName: "cx")?.stringValue)
-        let gh = emu(xfrm.elements(forName: "a:ext").first?.attribute(forName: "cy")?.stringValue)
-        guard gw > 0, gh > 0 else { return nil }
+        var gx = 0.0, gy = 0.0, gw = totalColW, gh = declaredRowH
+        if let xfrm = frameNode.elements(forName: "p:xfrm").first
+            ?? frameNode.elements(forName: "a:xfrm").first {
+            gx = emu(xfrm.elements(forName: "a:off").first?.attribute(forName: "x")?.stringValue)
+            gy = emu(xfrm.elements(forName: "a:off").first?.attribute(forName: "y")?.stringValue)
+            let w = emu(xfrm.elements(forName: "a:ext").first?.attribute(forName: "cx")?.stringValue)
+            let h = emu(xfrm.elements(forName: "a:ext").first?.attribute(forName: "cy")?.stringValue)
+            if w > 0 { gw = w }
+            if h > 0 { gh = h }
+        }
+        guard gw > 0 else { return nil }
+        if gh <= 0 { gh = Double(max(1, rows.count)) * 370840 } // ~0.4" per row
 
         var rect = CGRect(x: gx, y: gy, width: gw, height: gh)
-        for g in groupStack.reversed() { rect = g.apply(rect) }
+        if let g = groupStack.last { rect = g.apply(rect) } // affine already concatenates ancestors
         let ox = rect.minX / emuPerPx
         let oy = rect.minY / emuPerPx
         let tw = rect.width / emuPerPx
         let th = rect.height / emuPerPx
-
-        // Column widths & row heights (EMU)
-        let colWidths = tbl.elements(forName: "a:tblGrid").first?.elements(forName: "a:gridCol").compactMap { Double($0.attribute(forName: "w")?.stringValue ?? "") } ?? []
-        guard !colWidths.isEmpty else { return nil }
-        let totalColW = colWidths.reduce(0, +)
 
         // Table style lookup (firstRow / bandRow flags + styleId)
         let tblPr = tbl.elements(forName: "a:tblPr").first
@@ -2291,13 +2574,24 @@ public enum CanvaDocumentImporter {
 
         var elements: [CanvasElement] = []
         var rowY: Double = 0
-        let rows = tbl.elements(forName: "a:tr")
-        let totalRowH = rows.compactMap { Double($0.attribute(forName: "h")?.stringValue ?? "") }.reduce(0, +)
         let rowCount = rows.count
+        // Row heights distributed proportionally into th — same approach as
+        // column widths/tw, so tables inside scaled groups keep their ratio and
+        // undeclared h attrs share whatever the frame leaves over.
+        let missingRows = declaredRowHeights.filter { $0 <= 0 }.count
+        let undeclaredRowShare: Double = missingRows > 0
+            ? (declaredRowH > 0 && declaredRowH < gh
+               ? (gh - declaredRowH) / Double(missingRows)
+               : gh / Double(missingRows))
+            : 0
+        let rowHeightsEmu = declaredRowHeights.map { $0 > 0 ? $0 : undeclaredRowShare }
+        let rowHeightsEmuSum = rowHeightsEmu.reduce(0, +)
+        let rowHeightsPx: [Double] = rowHeightsEmuSum > 0
+            ? rowHeightsEmu.map { $0 / rowHeightsEmuSum * th }
+            : Array(repeating: th / Double(max(1, rowCount)), count: rowCount)
 
         for (rowIdx, tr) in rows.enumerated() {
-            let rowHEmu = Double(tr.attribute(forName: "h")?.stringValue ?? "") ?? (totalRowH > 0 ? totalRowH / Double(rows.count) : gh / Double(max(1, rows.count)))
-            let rowHPx = rowHEmu / emuPerPx
+            let rowHPx = rowHeightsPx[rowIdx]
 
             // Style resolution for this row
             var rowFill: ResolvedColor? = nil
@@ -2315,10 +2609,48 @@ public enum CanvaDocumentImporter {
             if rowFill == nil { rowFill = style?.wholeFill }
 
             var colX: Double = 0
-            let cells = tr.elements(forName: "a:tc")
-            for (colIdx, tc) in cells.enumerated() {
+            var colIdx = 0
+            // Merge bookkeeping (ECMA-376): the grid stays rectangular — a
+            // gridSpan="N" master is followed by N−1 real a:tc continuation
+            // cells marked hMerge="1", each occupying its own column slot. The
+            // master therefore claims ALL `covered` columns immediately and the
+            // following hMerge cells consume "span debt" (advance ZERO). This
+            // also tolerates non-conformant files that omit continuations: the
+            // next real cell still lands in the right column. vMerge cells are
+            // vertical continuations in LATER rows — they occupy their own
+            // column like any cell, they just draw nothing.
+            var hSpanDebt = 0
+            for tc in tr.elements(forName: "a:tc") {
                 guard colIdx < colWidths.count else { break }
-                let colWPx = (colWidths[colIdx] / totalColW) * tw
+                let hMerge = xmlBool(tc.attribute(forName: "hMerge")?.stringValue)
+                let vMerge = xmlBool(tc.attribute(forName: "vMerge")?.stringValue)
+                if hMerge && hSpanDebt > 0 {
+                    hSpanDebt -= 1
+                    continue
+                }
+                let isMergeContinuation = hMerge || vMerge
+                let gridSpan = max(1, Int(tc.attribute(forName: "gridSpan")?.stringValue ?? "") ?? 1)
+                let covered = isMergeContinuation ? 1 : min(gridSpan, colWidths.count - colIdx)
+                var cellWPx = 0.0
+                for k in 0..<covered { cellWPx += (colWidths[colIdx + k] / totalColW) * tw }
+
+                if isMergeContinuation {
+                    colX += cellWPx
+                    colIdx += 1
+                    continue
+                }
+
+                // rowSpan masters absorb the covered rows' heights (clamped to
+                // the actual row count — a malformed rowSpan can't hang import).
+                let rowSpan = max(1, Int(tc.attribute(forName: "rowSpan")?.stringValue ?? "") ?? 1)
+                var cellHPx = rowHPx
+                let spannedRows = min(rowSpan, rowHeightsPx.count - rowIdx)
+                if spannedRows > 1 {
+                    for k in 1..<spannedRows {
+                        cellHPx += rowHeightsPx[rowIdx + k]
+                    }
+                }
+
                 let tcPr = tc.elements(forName: "a:tcPr").first
                 var cellFill: FillStyle?
                 if let tcPr = tcPr {
@@ -2327,10 +2659,6 @@ public enum CanvaDocumentImporter {
                         cellFill = .solid(CodableColor(red: rc.color.red, green: rc.color.green, blue: rc.color.blue, opacity: rc.color.opacity * rc.alpha))
                     } else if tcPr.elements(forName: "a:noFill").first != nil {
                         cellFill = .solid(.clear)
-                    }
-                    if tc.attribute(forName: "hMerge")?.stringValue == "1" || tc.attribute(forName: "vMerge")?.stringValue == "1" {
-                        colX += colWPx
-                        continue
                     }
                 }
                 if cellFill == nil, let rf = rowFill {
@@ -2355,13 +2683,18 @@ public enum CanvaDocumentImporter {
                         stroke: StrokeStyle(isEnabled: true, color: borderColor, lineWidth: 1)
                     )),
                     x: ox + colX, y: oy + rowY,
-                    width: colWPx, height: rowHPx,
+                    width: cellWPx, height: cellHPx,
                     zIndex: zIndex
                 ))
 
                 // Cell text
                 if let txBody = tc.elements(forName: "a:txBody").first {
                     var textZ = zIndex
+                    // Known tradeoff: text taller than the cell emits a frame
+                    // that grows past the cell rect and can draw over the next
+                    // row — PowerPoint instead auto-grows the ROW. Reflowing
+                    // row heights post-measure is a possible future pass; the
+                    // spill keeps all content visible & editable for now.
                     // Cell insets (marL/marR/marT/marB on a:tcPr, default 91440/45720 EMU)
                     let marL = emu(tcPr?.attribute(forName: "marL")?.stringValue, default: 91440) / emuPerPx
                     let marR = emu(tcPr?.attribute(forName: "marR")?.stringValue, default: 91440) / emuPerPx
@@ -2370,13 +2703,13 @@ public enum CanvaDocumentImporter {
                     let anchorC = tcPr?.attribute(forName: "anchor")?.stringValue ?? "t"
                     var textEls = parseTextBody(
                         txBody, theme: theme,
-                        x: ox + colX, y: oy + rowY, w: colWPx, h: rowHPx, rotation: 0,
+                        x: ox + colX, y: oy + rowY, w: cellWPx, h: cellHPx, rotation: 0,
                         lIns: marL, rIns: marR, tIns: marT, bIns: marB,
                         autofitScale: 1.0, anchor: anchorC,
                         phType: nil, inheritedSizePt: nil,
                         majorFont: theme.majorFont, minorFont: theme.minorFont,
                         styleDefaultColor: rowTextColor,
-                        slideW: tw, zIndex: &textZ
+                        slideW: slideW, slideH: slideH, zIndex: &textZ
                     )
                     if !textEls.isEmpty {
                         // Table style bold (e.g. header rows)
@@ -2392,14 +2725,19 @@ public enum CanvaDocumentImporter {
                         zIndex = textZ
                     }
                 }
-                colX += colWPx
+                colX += cellWPx
+                colIdx += covered
+                // The master claimed all its columns up-front; the next
+                // covered-1 hMerge continuations consume debt, not columns.
+                hSpanDebt += covered - 1
             }
             rowY += rowHPx
-            if rowIdx == rows.count - 1 { break }
         }
 
         // Outer table stroke on each cell is skipped; return the grid
-        _ = th
+        if elements.isEmpty {
+            NSLog("PPTX import: table parsed but produced no cells — dropped")
+        }
         return elements.isEmpty ? nil : elements
     }
 
@@ -2631,8 +2969,9 @@ public enum CanvaDocumentImporter {
         var theme = PPTXTheme()
         // Find first theme file (theme1.xml usually)
         let themeDir = tempDir.appendingPathComponent("ppt/theme")
-        guard let files = try? FileManager.default.contentsOfDirectory(at: themeDir, includingPropertiesForKeys: nil).sorted(by: { $0.lastPathComponent < $1.lastPathComponent }),
-              let themeURL = files.first(where: { $0.pathExtension == "xml" }),
+        guard isContained(themeDir, under: tempDir),
+              let files = try? FileManager.default.contentsOfDirectory(at: themeDir, includingPropertiesForKeys: nil).sorted(by: { $0.lastPathComponent < $1.lastPathComponent }),
+              let themeURL = files.first(where: { $0.pathExtension == "xml" && isContained($0, under: tempDir) }),
               let doc = try? XMLDocument(contentsOf: themeURL),
               let clrScheme = doc.rootElement()?.elements(forName: "a:themeElements").first?.elements(forName: "a:clrScheme").first else {
             return theme
@@ -2697,8 +3036,9 @@ public enum CanvaDocumentImporter {
         return name
     }
 
-    private static func parseRelationships(_ url: URL) -> [String: String] {
-        guard let data = try? Data(contentsOf: url),
+    private static func parseRelationships(_ url: URL, tempDir: URL) -> [String: String] {
+        guard isContained(url, under: tempDir),
+              let data = try? Data(contentsOf: url),
               let doc = try? XMLDocument(data: data) else { return [:] }
         var map: [String: String] = [:]
         for rel in doc.rootElement()?.elements(forName: "Relationship") ?? [] {
@@ -2710,12 +3050,130 @@ public enum CanvaDocumentImporter {
         return map
     }
 
+    /// True when `url` — after resolving every symlink — still lives under the
+    /// extracted temp dir. A crafted archive can place a symlink at any package
+    /// path (e.g. ppt/media/x.png → ~/Documents/private.png) which unzip/ditto
+    /// recreate and NSImage / Data(contentsOf:) happily follow — an arbitrary
+    /// file-read primitive. Guards both rels targets and enumerated entries.
+    private static func isContained(_ url: URL, under tempDir: URL) -> Bool {
+        let root = tempDir.resolvingSymlinksInPath().standardizedFileURL.path
+        let resolved = url.resolvingSymlinksInPath().standardizedFileURL.path
+        let prefix = root.hasSuffix("/") ? root : root + "/"
+        return resolved == root || resolved.hasPrefix(prefix)
+    }
+
+    private static func resolvedPackageURL(tempDir: URL, target: String) -> URL? {
+        let url = tempDir.appendingPathComponent("ppt").appendingPathComponent(normalizeTarget(target))
+        guard isContained(url, under: tempDir) else {
+            NSLog("PPTX import: rels target %@ escapes package — rejected", target)
+            return nil
+        }
+        return url
+    }
+
     private static func normalizeTarget(_ target: String) -> String {
-        // "../media/image1.png" and "media/image1.png" → "media/image1.png"
-        var t = target
-        while t.hasPrefix("../") { t.removeFirst(3) }
-        if t.hasPrefix("/") { t.removeFirst() }
-        return t
+        // Resolve every "." / ".." component — a crafted rels target like
+        // "slides/../../etc/passwd" must not escape the package root. ".." past
+        // the root clamps (drops), matching the old leading-"../" strip while
+        // also covering mid-path escapes.
+        var out: [String] = []
+        for comp in target.components(separatedBy: "/") {
+            switch comp {
+            case "", ".": continue
+            case "..": if !out.isEmpty { out.removeLast() }
+            default: out.append(comp)
+            }
+        }
+        return out.joined(separator: "/")
+    }
+
+    /// First descendant (depth-first, document order) with `name`. Searches through
+    /// mc:AlternateContent / mc:Choice / mc:Fallback wrappers — mc:Choice precedes
+    /// mc:Fallback in real documents so canonical content wins over previews.
+    private static func descendant(_ el: XMLElement, name: String, depth: Int = 0) -> XMLElement? {
+        for child in el.children ?? [] {
+            guard let c = child as? XMLElement else { continue }
+            if c.name == name { return c }
+            if depth < 32, let found = descendant(c, name: name, depth: depth + 1) { return found }
+        }
+        return nil
+    }
+
+    /// Extracts a .pptx/.zip into `dest`. Info-ZIP `unzip` is tried first; on failure
+    /// (ZIP64 edge cases, unusual compression methods) we fall back to `ditto`,
+    /// which uses Apple's archive engine and accepts a few more variants.
+    /// `-o` keeps unzip non-interactive so a weird archive can never block on a
+    /// prompt while the caller waits on the main thread.
+    private static func unzipArchive(at url: URL, into dest: URL) -> Bool {
+        func run(_ exe: String, _ args: [String]) -> Bool {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: exe)
+            process.arguments = args
+            // Never let a subprocess inherit stdin — an interactive prompt
+            // (e.g. unzip's password query) would hang the caller.
+            process.standardInput = FileHandle.nullDevice
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            do { try process.run() } catch { return false }
+            process.waitUntilExit()
+            return process.terminationStatus == 0
+        }
+        if run("/usr/bin/unzip", ["-oq", url.path, "-d", dest.path]) { return true }
+        // ditto extracts into the destination dir itself.
+        return run("/usr/bin/ditto", ["-x", "-k", url.path, dest.path])
+    }
+
+    private static let maxArchiveEntries = 50_000
+    private static let maxArchiveBytes: Int64 = 6 * 1024 * 1024 * 1024 // 6 GB
+
+    /// Pre-extraction zip-bomb guard: `unzip -l` lists the central directory —
+    /// the claimed entry count and uncompressed size are bounded BEFORE any
+    /// bytes hit disk. Returns nil when the listing can't be parsed; callers
+    /// must treat nil as a rejection (fail closed) — a file we can't list is
+    /// not a trustworthy archive, and extracting it would defeat the bound.
+    private static func archiveWithinLimits(_ url: URL) -> Bool? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
+        process.arguments = ["-l", url.path]
+        process.standardInput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        do { try process.run() } catch { return nil }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0,
+              let text = String(data: data, encoding: .utf8) else { return nil }
+        // Last content line: "  <totalBytes>                     <N> files"
+        for line in text.components(separatedBy: "\n").reversed() {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasSuffix("files") || trimmed.hasSuffix("file") else { continue }
+            let parts = trimmed.split(separator: " ").compactMap { Int64($0) }
+            guard parts.count >= 2 else { return nil }
+            return parts[0] <= maxArchiveBytes && parts[1] <= maxArchiveEntries
+        }
+        return nil
+    }
+
+    /// Zip-bomb backstop: bounds total entries and decompressed bytes actually
+    /// extracted into the temp dir — catches archives whose listing lied or
+    /// that unzip couldn't list (ditto fallback path).
+    private static func validateExtraction(at dir: URL) -> Bool {
+        guard let e = FileManager.default.enumerator(
+            at: dir, includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey]
+        ) else { return true }
+        var count = 0
+        var total: Int64 = 0
+        for case let u as URL in e {
+            count += 1
+            if count > maxArchiveEntries { return false }
+            if let v = try? u.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey]),
+               v.isRegularFile == true {
+                total += Int64(v.fileSize ?? 0)
+                if total > maxArchiveBytes { return false }
+            }
+        }
+        return true
     }
 
     // MARK: Whitespace-only run preservation
@@ -2761,6 +3219,11 @@ public enum CanvaDocumentImporter {
     private static func emu(_ s: String?, default value: Double = 0) -> Double {
         guard let s = s else { return value }
         return Double(s) ?? value
+    }
+
+    /// OOXML xsd:boolean — "1"/"true" (absent or "0"/"false" is false).
+    private static func xmlBool(_ s: String?) -> Bool {
+        s == "1" || s == "true"
     }
 
     // =========================================================================
@@ -2939,24 +3402,38 @@ public enum CanvaDocumentImporter {
     public static func importFromZIP(url: URL, projectName: String) -> CanvasProject? {
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
-        process.arguments = ["-q", url.path, "-d", tempDir.path]
-        try? process.run()
-        process.waitUntilExit()
+        // Same fail-closed rule as PPTX — no unbounded extraction when the
+        // central directory can't be listed.
+        if archiveWithinLimits(url) != true {
+            NSLog("ZIP import: %@ exceeds archive limits — possible zip bomb", url.lastPathComponent)
+            return nil
+        }
+        guard unzipArchive(at: url, into: tempDir) else { return nil }
+        guard validateExtraction(at: tempDir) else {
+            NSLog("ZIP import: %@ exceeds extraction limits — possible zip bomb", url.lastPathComponent)
+            return nil
+        }
 
-        guard let enumerator = FileManager.default.enumerator(at: tempDir, includingPropertiesForKeys: nil) else {
+        guard let enumerator = FileManager.default.enumerator(
+            at: tempDir, includingPropertiesForKeys: [.isSymbolicLinkKey]
+        ) else {
             return nil
         }
 
         var imageURLs: [URL] = []
         let validImageExts = ["png", "jpg", "jpeg", "webp", "heic", "tiff"]
+        let root = tempDir.resolvingSymlinksInPath().standardizedFileURL.path + "/"
 
         for case let fileURL as URL in enumerator {
-            if validImageExts.contains(fileURL.pathExtension.lowercased()) && !fileURL.lastPathComponent.starts(with: ".") {
-                imageURLs.append(fileURL)
-            }
+            guard validImageExts.contains(fileURL.pathExtension.lowercased()),
+                  !fileURL.lastPathComponent.starts(with: ".") else { continue }
+            // A zip can carry a symlink entry pointing outside the temp dir —
+            // reading it would embed an arbitrary local file into the project.
+            let resolved = fileURL.resolvingSymlinksInPath().standardizedFileURL.path
+            guard resolved.hasPrefix(root) else { continue }
+            imageURLs.append(fileURL)
         }
 
         imageURLs.sort { $0.lastPathComponent < $1.lastPathComponent }
@@ -2997,7 +3474,6 @@ public enum CanvaDocumentImporter {
             pages.append(page)
         }
 
-        try? FileManager.default.removeItem(at: tempDir)
         guard !pages.isEmpty else { return nil }
 
         return CanvasProject(
@@ -3010,8 +3486,15 @@ public enum CanvaDocumentImporter {
     // 6. PLUMA / JSON DOCUMENT IMPORTER
     // =========================================================================
     public static func importFromJSON(url: URL) -> CanvasProject? {
-        guard let data = try? Data(contentsOf: url),
-              let project = try? JSONDecoder().decode(CanvasProject.self, from: data) else { return nil }
-        return project
+        // CanvasProject.decode uses .iso8601 dates — a default JSONDecoder
+        // throws typeMismatch on the format encodeToData writes, so every
+        // .canv/.json the app produced failed to import.
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        do {
+            return try CanvasProject.decode(from: data)
+        } catch {
+            NSLog("JSON import: %@ failed to decode: %@", url.lastPathComponent, "\(error)")
+            return nil
+        }
     }
 }

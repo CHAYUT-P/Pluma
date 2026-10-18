@@ -81,6 +81,17 @@ public struct CodableColor: Codable, Equatable, Hashable {
         return copy
     }
 
+    /// WCAG relative luminance — 0 is black, 1 is white.
+    public var relativeLuminance: Double {
+        func linear(_ c: Double) -> Double {
+            c <= 0.03928 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4)
+        }
+        return 0.2126 * linear(red) + 0.7152 * linear(green) + 0.0722 * linear(blue)
+    }
+
+    /// True when the color is light enough that dark ink should sit on it.
+    public var isLight: Bool { relativeLuminance > 0.45 }
+
     // Classic & Modern Presets
     public static let white = CodableColor(red: 1, green: 1, blue: 1)
     public static let black = CodableColor(red: 0, green: 0, blue: 0)

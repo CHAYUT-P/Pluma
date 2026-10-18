@@ -1,6 +1,8 @@
 import SwiftUI
 
-public struct DrawingTabView: View {
+/// Pen settings — nib width and ink — shown in a popover from the toolbar Pen
+/// button (formerly the left rail's Draw tab).
+public struct PenSettingsPopover: View {
     @ObservedObject var viewModel: CanvasDocumentViewModel
 
     private let inkColors: [CodableColor] = [
@@ -8,66 +10,73 @@ public struct DrawingTabView: View {
         CodableColor.waxSealRed, CodableColor(hex: "#1D4ED8"), CodableColor(hex: "#57534E"), .white
     ]
 
+    public init(viewModel: CanvasDocumentViewModel) {
+        self.viewModel = viewModel
+    }
+
     public var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("INK & FREEHAND")
-                .font(.system(size: 12, weight: .bold, design: .serif))
-                .foregroundColor(.primary)
-                .tracking(0.5)
-                .padding(.horizontal, 14)
-                .padding(.top, 12)
+            HStack {
+                Text("Pen")
+                    .font(PlumaTheme.label(13, weight: .semibold))
+                Spacer()
+                Toggle("Drawing", isOn: Binding(
+                    get: { viewModel.activeTool == .draw },
+                    set: { viewModel.activeTool = $0 ? .draw : .select }
+                ))
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .font(PlumaTheme.label(11, weight: .regular))
+            }
 
-            VStack(alignment: .leading, spacing: 12) {
-                Button(action: {
-                    viewModel.activeTool = (viewModel.activeTool == .draw) ? .select : .draw
-                }) {
-                    HStack {
-                        Image(systemName: "pencil.tip")
-                        Text(viewModel.activeTool == .draw ? "Inking Mode: ACTIVE" : "Start Inking")
-                            .font(.system(size: 12, weight: .bold, design: .serif))
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 8)
-                    .background(viewModel.activeTool == .draw ? Color(hex: "#C2410C") : Color.secondary.opacity(0.08))
-                    .foregroundColor(viewModel.activeTool == .draw ? .white : .primary)
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.16), lineWidth: 0.8))
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    sectionTitle("Width")
+                    Spacer()
+                    Text("\(Int(viewModel.drawingLineWidth)) pt")
+                        .font(PlumaTheme.numeric(11))
+                        .foregroundColor(.secondary)
                 }
-                .buttonStyle(.plain)
-                .hoverHighlight()
-
-                Text("Nib Width: \(Int(viewModel.drawingLineWidth)) px")
-                    .font(.system(size: 11, weight: .medium, design: .serif))
-                    .foregroundColor(.secondary)
-
                 Slider(value: $viewModel.drawingLineWidth, in: 1...25, step: 1)
+                    .controlSize(.small)
+            }
 
-                Text("Ink Well")
-                    .font(.system(size: 11, weight: .bold, design: .serif))
-                    .foregroundColor(Color(hex: "#C2410C"))
-                    .tracking(0.3)
-
-                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    sectionTitle("Ink")
+                    Spacer()
+                    Text("Custom")
+                        .font(PlumaTheme.label(11, weight: .regular))
+                        .foregroundColor(.secondary)
+                    CanvaColorButton(color: $viewModel.drawingColor, size: 16)
+                        .help("Custom ink color")
+                }
+                LazyVGrid(columns: Array(repeating: GridItem(.fixed(28), spacing: 8), count: 4), alignment: .leading, spacing: 8) {
                     ForEach(inkColors, id: \.self) { color in
-                        Button(action: {
-                            viewModel.drawingColor = color
-                        }) {
+                        Button(action: { viewModel.drawingColor = color }) {
                             Circle()
                                 .fill(color.color)
-                                .frame(width: 30, height: 30)
+                                .frame(width: 22, height: 22)
+                                .overlay(Circle().stroke(PlumaTheme.hairline, lineWidth: 1))
+                                .padding(2)
                                 .overlay(
-                                    Circle()
-                                        .stroke(viewModel.drawingColor == color ? Color(hex: "#C2410C") : Color.secondary.opacity(0.25), lineWidth: 2)
+                                    Circle().stroke(viewModel.drawingColor == color ? PlumaTheme.accent : .clear, lineWidth: 2)
                                 )
                         }
                         .buttonStyle(.plain)
-                .hoverHighlight()
+                        .help(color.hexString)
                     }
                 }
             }
-            .padding(.horizontal, 14)
-
-            Spacer()
         }
+        .padding(14)
+        .frame(width: 230)
+    }
+
+    private func sectionTitle(_ title: String) -> some View {
+        Text(title.uppercased())
+            .font(PlumaTheme.label(10, weight: .semibold))
+            .tracking(0.6)
+            .foregroundColor(.secondary)
     }
 }

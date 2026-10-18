@@ -5,6 +5,9 @@ public struct ElementRendererView: View {
     public let element: CanvasElement
     public var isEditingText: Bool = false
     public var isEditingCode: Bool = false
+    /// True while a resize/drag/rotate gesture streams ticks. Renderers use it
+    /// to swap multi-pass effects (outline/neon shadows) for a cheap preview.
+    public var isLiveTransforming: Bool = false
     public var onUpdateText: ((String) -> Void)? = nil
     public var onCommitText: (() -> Void)? = nil
     public var onUpdateCode: ((String) -> Void)? = nil
@@ -15,6 +18,7 @@ public struct ElementRendererView: View {
         element: CanvasElement,
         isEditingText: Bool = false,
         isEditingCode: Bool = false,
+        isLiveTransforming: Bool = false,
         onUpdateText: ((String) -> Void)? = nil,
         onCommitText: (() -> Void)? = nil,
         onUpdateCode: ((String) -> Void)? = nil,
@@ -24,6 +28,7 @@ public struct ElementRendererView: View {
         self.element = element
         self.isEditingText = isEditingText
         self.isEditingCode = isEditingCode
+        self.isLiveTransforming = isLiveTransforming
         self.onUpdateText = onUpdateText
         self.onCommitText = onCommitText
         self.onUpdateCode = onUpdateCode
@@ -52,8 +57,30 @@ public struct ElementRendererView: View {
                         onCommit: { onCommitText?() },
                         onEscape: { onCommitText?() }
                     )
+                } else if text.effectKind == .none && text.cardBackground == nil {
+                    // Plain text uses the unified NSTextView engine for display too,
+                    // so the box on canvas is pixel-identical to the editor and to
+                    // TextMeasurement (Canva/PowerPoint parity — no SwiftUI-Text vs
+                    // TextKit wrapping/leading drift). Non-editing hits pass through
+                    // to the canvas gestures (see CanvaUnifiedNSTextView.hitTest).
+                    CanvaDirectTextView(
+                        text: Binding(
+                            get: { text.text },
+                            set: { newText in onUpdateText?(newText) }
+                        ),
+                        textContent: text,
+                        size: CGSize(width: element.width, height: element.height),
+                        isEditing: false,
+                        onCommit: { onCommitText?() },
+                        onEscape: { onCommitText?() }
+                    )
+                    .allowsHitTesting(false)
                 } else {
-                    TextRendererView(text: text, size: CGSize(width: element.width, height: element.height))
+                    TextRendererView(
+                        text: text,
+                        size: CGSize(width: element.width, height: element.height),
+                        isLiveTransforming: isLiveTransforming
+                    )
                 }
 
             case .image(let imageContent):
@@ -77,6 +104,13 @@ public struct ElementRendererView: View {
             }
         }
         .frame(width: max(1, element.width), height: max(1, element.height))
+        // Give every element a full-rect hit target. Without this the plain-text
+        // branch contributes ZERO hit area — its NSTextView hitTests nil when not
+        // editing AND is wrapped in allowsHitTesting(false) — so clicks fell
+        // through to the page (deselect/marquee) and double-click-to-edit never
+        // fired. Also fixes partial-coverage content (curved text, icons, shape
+        // padding). Applied before rotation/flip so the rect transforms with it.
+        .contentShape(Rectangle())
         .if(element.backdropBlur > 0) { view in
             view.background(.ultraThinMaterial)
         }
@@ -156,6 +190,8 @@ struct ShapeRendererView: View {
 
             case .pattern:
                 shapePath.fill(shape.fill.solidColor.color)
+                    .overlay(PatternFillView(fill: shape.fill))
+                    .clipShape(shapePath)
             }
 
             // Stroke
@@ -185,6 +221,10 @@ struct ShapeRendererView: View {
 struct TextRendererView: View {
     let text: TextContent
     let size: CGSize
+    /// During a live resize/drag, multi-pass shadows (outline ×4, neon ×3)
+    /// cost an offscreen pass each per frame — show the flat glyphs instead
+    /// and restore the full effect on commit.
+    var isLiveTransforming: Bool = false
 
     var body: some View {
         if text.isCurved && !text.text.isEmpty {
@@ -193,8 +233,15 @@ struct TextRendererView: View {
             let textWeight = fontWeight(from: text.fontWeight)
             let isBold = text.fontWeight >= 600
             let font = Font.custom(text.fontFamily, size: CGFloat(text.fontSize))
-            let innerW = max(1, size.width - (text.cardBackground != nil ? CGFloat(text.cardPadding * 2) : 0))
-            let innerH = max(1, size.height - (text.cardBackground != nil ? CGFloat(text.cardPadding * 2) : 0))
+            // Content area inside card padding + text insets; the run is placed
+            // per verticalAnchor exactly like the NSTextView path (see
+            // TextBoxLayout) so both engines agree and the transformer is the
+            // full box.
+            let boxSize = CGSize(width: max(1, size.width), height: max(1, size.height))
+            let area = TextBoxLayout.contentSize(for: text, boxSize: boxSize)
+            let contentH = TextMeasurement.contentHeight(for: text, boxWidth: boxSize.width)
+            let inner = TextBoxLayout.innerSize(for: text, boxSize: boxSize, fittedContentHeight: contentH)
+            let offset = TextBoxLayout.centeredOffset(for: text, boxSize: boxSize, innerSize: inner)
 
             let baseText = Text(text.text)
                 .font(font)
@@ -206,7 +253,7 @@ struct TextRendererView: View {
                 .lineSpacing(CGFloat(text.lineSpacing))
                 .multilineTextAlignment(text.alignment.textAlignment)
                 .foregroundColor(text.textColor.color)
-                .frame(width: innerW, height: innerH, alignment: textAlignmentAlignment(text.alignment))
+                .frame(width: area.width, height: max(inner.height, 1), alignment: textAlignmentAlignment(text.alignment))
 
             ZStack {
                 if let bg = text.cardBackground {
@@ -219,9 +266,17 @@ struct TextRendererView: View {
                             )
                         }
                 }
-                styledText(baseText)
+                Group {
+                    if isLiveTransforming {
+                        baseText
+                    } else {
+                        styledText(baseText)
+                    }
+                }
+                .frame(width: inner.width, height: inner.height, alignment: .center)
+                .offset(offset)
             }
-            .frame(width: size.width, height: size.height)
+            .frame(width: boxSize.width, height: boxSize.height, alignment: .center)
         }
     }
 

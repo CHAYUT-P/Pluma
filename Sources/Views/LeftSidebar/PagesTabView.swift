@@ -10,55 +10,34 @@ public struct PagesTabView: View {
 
     public var body: some View {
         VStack(spacing: 0) {
-            // Header
-            VStack(alignment: .leading, spacing: 12) {
-                HStack {
-                    Image(systemName: "doc.on.doc.fill")
-                        .font(.system(size: 14))
-                        .foregroundColor(Color(hex: "#C2410C"))
-
-                    Text("PAGES & SECTIONS")
-                        .font(.system(size: 11.5, weight: .bold, design: .serif))
-                        .tracking(0.8)
-                        .foregroundColor(.primary)
-
-                    Spacer()
-
-                    Text("\(viewModel.project.pages.count) Pages")
-                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                        .foregroundColor(.secondary)
-                }
-
-                // Layout Mode Picker (Document Flow, Single Slide, Whiteboard)
-                HStack(spacing: 3) {
-                    layoutModeButton(mode: .continuousVertical, label: "Document", icon: "scroll.fill")
-                    layoutModeButton(mode: .singleSlide, label: "Slide", icon: "rectangle.split.1x2.fill")
-                    layoutModeButton(mode: .infiniteWhiteboard, label: "Board", icon: "brain.head.profile")
-                }
-                .padding(3)
-                .background(Color.secondary.opacity(0.08))
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-
-                // Add Page Quick Button
-                Button(action: {
-                    viewModel.addPage()
-                }) {
-                    HStack(spacing: 6) {
-                        Image(systemName: "plus.circle.fill")
-                            .font(.system(size: 12))
-                        Text("Add New Page")
-                            .font(.system(size: 12, weight: .semibold, design: .serif))
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 8)
-                    .foregroundColor(Color(hex: "#C2410C"))
-                }
-                .buttonStyle(HoverPillButtonStyle(cornerRadius: 7, tint: Color(hex: "#C2410C")))
+            // Header — layout mode (Slide / Document / Whiteboard) lives in the
+            // toolbar layout menu, so it is not duplicated here.
+            SidebarPanelHeader("Pages") {
+                Text(viewModel.project.pages.count == 1 ? "1 page" : "\(viewModel.project.pages.count) pages")
+                    .font(PlumaTheme.numeric(11, weight: .regular))
+                    .foregroundColor(.secondary)
             }
-            .padding(14)
-            .background(Color(NSColor.controlBackgroundColor))
 
-            Divider()
+            Button(action: {
+                viewModel.addPage()
+            }) {
+                HStack(spacing: 6) {
+                    Image(systemName: "plus")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text("Add Page")
+                        .font(PlumaTheme.label(12, weight: .semibold))
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 3)
+                .foregroundColor(PlumaTheme.accentOnSoft)
+            }
+            .buttonStyle(HoverPillButtonStyle(cornerRadius: 7, tint: PlumaTheme.accent))
+            .help("Add a page at the end")
+            .padding(.horizontal, 14)
+            .padding(.top, 8)
+            .padding(.bottom, 12)
+
+            Rectangle().fill(PlumaTheme.hairline).frame(height: 1)
 
             // Page Cards List
             ScrollView(.vertical, showsIndicators: true) {
@@ -71,8 +50,15 @@ public struct PagesTabView: View {
             }
             // Re-render thumbnails shortly after any confirmed change (move/resize/rotate
             // commit, text edit, undo, delete…) so the mini previews always reflect reality.
+            // Skipped while a gesture streams: the debounced refresh fires on commit.
             .onChange(of: viewModel.project) { _, _ in
+                guard !viewModel.isLiveTransforming else { return }
                 scheduleThumbnailRefresh()
+            }
+            .onChange(of: viewModel.isLiveTransforming) { _, isLive in
+                if !isLive {
+                    scheduleThumbnailRefresh()
+                }
             }
         }
     }
@@ -117,21 +103,21 @@ public struct PagesTabView: View {
             HStack(spacing: 8) {
                 // Page Number Badge
                 Text("\(index + 1)")
-                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .font(PlumaTheme.numeric(11, weight: .semibold))
                     .foregroundColor(isCurrent ? .white : .secondary)
                     .frame(width: 22, height: 22)
-                    .background(isCurrent ? Color(hex: "#C2410C") : Color.secondary.opacity(0.15))
-                    .clipShape(Circle())
+                    .background(Circle().fill(isCurrent ? PlumaTheme.accent : PlumaTheme.control))
 
                 // Page Name Field
                 TextField("Page \(index + 1)", text: Binding(
                     get: { page.name },
                     set: { newName in
-                        viewModel.project.pages[index].name = newName
+                        // renamePage persists; a direct pages[] write never reached disk.
+                        viewModel.renamePage(at: index, to: newName)
                     }
                 ))
                 .textFieldStyle(.plain)
-                .font(.system(size: 12, weight: isCurrent ? .bold : .medium, design: .serif))
+                .font(PlumaTheme.label(12, weight: isCurrent ? .semibold : .regular))
 
                 Spacer()
 
@@ -193,7 +179,7 @@ public struct PagesTabView: View {
                         .aspectRatio(contentMode: .fit)
                 } else {
                     Rectangle()
-                        .fill(Color.secondary.opacity(0.07))
+                        .fill(PlumaTheme.control)
                         .overlay(
                             ProgressView()
                                 .controlSize(.small)
@@ -202,37 +188,32 @@ public struct PagesTabView: View {
             }
             .frame(maxWidth: .infinity)
             .frame(height: thumbH)
-            .background(Color.white)
+            .background(PlumaTheme.workspace)
             .clipShape(RoundedRectangle(cornerRadius: 6))
             .overlay(
                 RoundedRectangle(cornerRadius: 6)
                     .stroke(
-                        isCurrent ? Color(hex: "#C2410C").opacity(0.8) : Color.secondary.opacity(0.2),
+                        isCurrent ? PlumaTheme.accent.opacity(0.8) : PlumaTheme.hairline,
                         lineWidth: isCurrent ? 2 : 1
                     )
             )
 
             // Thumbnail / Dimensions info
             HStack {
-                Text("\(Int(page.width)) × \(Int(page.height)) px")
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundColor(.secondary)
+                Text("\(Int(page.width)) × \(Int(page.height))")
+                    .font(PlumaTheme.numeric(10.5, weight: .regular))
 
                 Spacer()
 
-                Text("\(page.elements.count) elements")
-                    .font(.system(size: 10, design: .serif))
-                    .foregroundColor(.secondary)
+                Text(page.elements.count == 1 ? "1 element" : "\(page.elements.count) elements")
+                    .font(PlumaTheme.label(10.5, weight: .regular))
             }
+            .foregroundColor(.secondary)
         }
         .padding(10)
         .background(
             RoundedRectangle(cornerRadius: 8)
-                .fill(isCurrent ? Color(hex: "#C2410C").opacity(0.08) : Color.secondary.opacity(0.06))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(isCurrent ? Color(hex: "#C2410C").opacity(0.6) : Color.secondary.opacity(0.15), lineWidth: isCurrent ? 1.5 : 1)
+                .fill(isCurrent ? PlumaTheme.accentSoft : PlumaTheme.control)
         )
         .contentShape(Rectangle())
         .onHover { hovering in
@@ -245,27 +226,5 @@ public struct PagesTabView: View {
         .onTapGesture {
             viewModel.scrollToPage(index: index)
         }
-    }
-
-    private func layoutModeButton(mode: PageLayoutMode, label: String, icon: String) -> some View {
-        let isSelected = viewModel.pageLayoutMode == mode
-
-        return Button(action: {
-            withAnimation(.easeInOut(duration: 0.15)) {
-                viewModel.pageLayoutMode = mode
-            }
-        }) {
-            HStack(spacing: 4) {
-                Image(systemName: icon)
-                    .font(.system(size: 9.5))
-                Text(label)
-                    .font(.system(size: 10, weight: isSelected ? .bold : .medium, design: .serif))
-                    .lineLimit(1)
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 5.5)
-            .foregroundColor(isSelected ? .white : .secondary)
-        }
-        .buttonStyle(SegmentedSegmentStyle(isSelected: isSelected))
     }
 }

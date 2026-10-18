@@ -114,6 +114,9 @@ public struct CustomShapePath {
         case .donut:
             return donutPath(in: rect)
 
+        case .database:
+            return databasePath(in: rect)
+
         case .parallelogram:
             return parallelogramPath(in: rect)
 
@@ -641,6 +644,51 @@ public struct CustomShapePath {
         path.addEllipse(in: rect)
         let innerRect = rect.insetBy(dx: rect.width * 0.25, dy: rect.height * 0.25)
         path.addEllipse(in: innerRect)
+        return path
+    }
+
+    /// Database cylinder (OOXML "can" / flowChartMagneticDisk): elliptical lid,
+    /// straight sides, curved bottom edge. The lid's back arc closes the body
+    /// and a full top ellipse adds the front rim — matching PowerPoint's "can".
+    private static func databasePath(in rect: CGRect) -> Path {
+        var path = Path()
+        let capH = min(rect.height * 0.22, rect.width * 0.5)
+        let rx = rect.width / 2
+        let ry = capH / 2
+        let cx = rect.midX
+        let topCY = rect.minY + ry
+        let botCY = rect.maxY - ry
+        let k: CGFloat = 0.5522847498 // circle→cubic constant for a quarter ellipse
+
+        // Body: left rim → down → front bottom half-ellipse → up right rim →
+        // back arc of the lid → close.
+        path.move(to: CGPoint(x: rect.minX, y: topCY))
+        path.addLine(to: CGPoint(x: rect.minX, y: botCY))
+        path.addCurve(
+            to: CGPoint(x: cx, y: rect.maxY),
+            control1: CGPoint(x: rect.minX, y: botCY + k * ry),
+            control2: CGPoint(x: cx - k * rx, y: rect.maxY)
+        )
+        path.addCurve(
+            to: CGPoint(x: rect.maxX, y: botCY),
+            control1: CGPoint(x: cx + k * rx, y: rect.maxY),
+            control2: CGPoint(x: rect.maxX, y: botCY + k * ry)
+        )
+        path.addLine(to: CGPoint(x: rect.maxX, y: topCY))
+        path.addCurve(
+            to: CGPoint(x: cx, y: rect.minY),
+            control1: CGPoint(x: rect.maxX, y: topCY - k * ry),
+            control2: CGPoint(x: cx + k * rx, y: rect.minY)
+        )
+        path.addCurve(
+            to: CGPoint(x: rect.minX, y: topCY),
+            control1: CGPoint(x: cx - k * rx, y: rect.minY),
+            control2: CGPoint(x: rect.minX, y: topCY - k * ry)
+        )
+        path.closeSubpath()
+
+        // Full lid ellipse: fills the top and strokes the front rim.
+        path.addEllipse(in: CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: capH))
         return path
     }
 

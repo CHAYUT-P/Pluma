@@ -20,7 +20,8 @@ public enum SnappingEngine {
         canvasSize: CGSize,
         enableCanvasSnap: Bool = true,
         enableElementSnap: Bool = true,
-        rulerGuides: [CanvasGuide] = []
+        rulerGuides: [CanvasGuide] = [],
+        threshold: Double = snapThreshold
     ) -> SnappingResult {
         var snappedX = rect.origin.x
         var snappedY = rect.origin.y
@@ -51,7 +52,7 @@ public enum SnappingEngine {
             (pos: rect.maxY, offset: rect.height)
         ]
 
-        var bestYDist = snapThreshold
+        var bestYDist = threshold
         var snappedYPos: Double? = nil
         var bestYGuidePos: Double? = nil
 
@@ -95,7 +96,7 @@ public enum SnappingEngine {
             (pos: rect.maxX, offset: rect.width)
         ]
 
-        var bestXDist = snapThreshold
+        var bestXDist = threshold
         var snappedXPos: Double? = nil
         var bestXGuidePos: Double? = nil
 

@@ -13,13 +13,17 @@ This skill equips the agent to act as an autonomous graphic designer, art direct
    - Create pitch decks (16:9, 1920×1080), executive resumes (A4, 1240×1754), Instagram posts (1080×1080), YouTube thumbnails (1280×720), and code snippet graphics (1200×675).
    - Lay out hierarchy: Title $\rightarrow$ Subtitle $\rightarrow$ Body paragraphs $\rightarrow$ Metric badges $\rightarrow$ Accent rules.
 
-2. **Available MCP Tools**:
-   - `pluma_list_projects`: Lists existing projects and their dimensions.
-   - `pluma_create_project`: Initializes a new canvas project.
-   - `pluma_get_project`: Inspects layer tree, typography, and positions.
-   - `pluma_add_text`: Adds typography with custom font family, size, weight, and color.
-   - `pluma_add_shape`: Adds vector shapes, cards, pills, and divider lines.
-   - `pluma_open_app`: Focuses `Pluma.app` on macOS.
+2. **Available MCP Tools** (via `scripts/pluma_mcp_server.py` → live app bridge on 127.0.0.1:9470):
+   - `pluma_status`: App connection + project info. Always call first.
+   - `pluma_get_page`: Every element on a page (id, geometry, styles, text).
+   - `pluma_screenshot`: PNG render of a page — use it to SEE and iterate on edits.
+   - `pluma_add_element`: text, shapes (rectangle/circle/star/arrow/diamond/database…), sticky, image; supports `fill:"pattern"` + `pattern`/`patternScale`/`patternColor`/`baseColor` for halftone & crosshatch fills.
+   - `pluma_add_code_block`: syntax-highlighted code card (12 languages, 7 themes).
+   - `pluma_update_element` / `pluma_delete_element` / `pluma_duplicate_element` / `pluma_reorder_element`.
+   - `pluma_connect_elements`: anchored arrows that follow elements.
+   - `pluma_add_page` / `pluma_select_page` / `pluma_clear_page`.
+   - `pluma_undo` / `pluma_redo` / `pluma_save` — all bridge edits are undoable.
+   - `pluma_list_templates` / `pluma_apply_template`, `pluma_design_guide`.
 
 3. **Pluma CLI Alternative**:
    ```bash

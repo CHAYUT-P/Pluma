@@ -14,10 +14,7 @@ public struct TypographySection: View {
     public var body: some View {
         if let element = viewModel.primarySelectedElement,
            case .text(let text) = element.payload {
-            VStack(alignment: .leading, spacing: 10) {
-                Text("TYPOGRAPHY")
-                    .font(.system(size: 10, weight: .bold, design: .serif))
-                    .foregroundColor(Color(hex: "#D97706"))
+            InspectorSection("Typography") {
 
                 // Text Content
                 TextField("Text", text: Binding(
@@ -29,11 +26,12 @@ public struct TypographySection: View {
                                 elem.payload = .text(t)
                             }
                         }
+                        viewModel.refitSelectedTextHeights()
                     }
                 ), axis: .vertical)
                 .textFieldStyle(.plain)
                 .lineLimit(3...6)
-                .font(.system(size: 12, design: .serif))
+                .font(.system(size: 12))
                 .foregroundColor(.primary)
                 .padding(6)
                 .background(Color.secondary.opacity(0.08))
@@ -44,7 +42,7 @@ public struct TypographySection: View {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack {
                         Text("Typeface")
-                            .font(.system(size: 10, weight: .bold, design: .serif))
+                            .font(.system(size: 10, weight: .bold))
                             .foregroundColor(.secondary)
                         Spacer()
                         if let currentFont = FontCatalog.allFonts.first(where: { $0.name == text.fontFamily }) {
@@ -54,10 +52,10 @@ public struct TypographySection: View {
                                 Text(currentFont.license.badgeLabel)
                                     .font(.system(size: 8.5, weight: .bold))
                             }
-                            .foregroundColor(currentFont.license == .commercial ? Color(hex: "#10B981") : Color(hex: "#D97706"))
+                            .foregroundColor(currentFont.license == .commercial ? Color(hex: "#10B981") : PlumaTheme.sectionHeader)
                             .padding(.horizontal, 5)
                             .padding(.vertical, 2)
-                            .background(currentFont.license == .commercial ? Color(hex: "#10B981").opacity(0.12) : Color(hex: "#D97706").opacity(0.12))
+                            .background(currentFont.license == .commercial ? Color(hex: "#10B981").opacity(0.12) : PlumaTheme.sectionHeader.opacity(0.12))
                             .clipShape(Capsule())
                         }
                     }
@@ -89,7 +87,7 @@ public struct TypographySection: View {
                 HStack(spacing: 8) {
                     HStack(spacing: 4) {
                         Text("Size")
-                            .font(.system(size: 10, weight: .bold, design: .serif))
+                            .font(.system(size: 10, weight: .bold))
                             .foregroundColor(.secondary)
                         TextField("", value: Binding(
                             get: { text.fontSize },
@@ -100,10 +98,12 @@ public struct TypographySection: View {
                                         elem.payload = .text(t)
                                     }
                                 }
+                                viewModel.refitSelectedTextHeights()
                             }
                         ), format: .number)
                         .textFieldStyle(.plain)
-                        .font(.system(size: 11, design: .monospaced))
+                        .font(PlumaTheme.numeric(12))
+                        .frame(width: 52)
                         .padding(4)
                         .background(Color.secondary.opacity(0.08))
                         .clipShape(RoundedRectangle(cornerRadius: 4))
@@ -119,6 +119,8 @@ public struct TypographySection: View {
                                     elem.payload = .text(t)
                                 }
                             }
+                            // Heavier weights are wider — re-wrap and refit the box.
+                            viewModel.refitSelectedTextHeights()
                         }
                     )) {
                         Text("Light").tag(300.0)
@@ -129,26 +131,32 @@ public struct TypographySection: View {
                         Text("Black").tag(900.0)
                     }
                     .pickerStyle(.menu)
+                    .labelsHidden()
+                    .frame(maxWidth: .infinity)
+                    .help("Font weight")
                 }
 
                 // Text Color & Gradient
                 HStack {
-                    Text("Ink Color")
-                        .font(.system(size: 11, design: .serif))
+                    Text("Color")
+                        .font(.system(size: 11))
                         .foregroundColor(.secondary)
                     Spacer()
-                    ColorPicker("", selection: Binding(
-                        get: { text.textColor.color },
-                        set: { newCol in
-                            viewModel.updateSelectedElement { elem in
-                                if case .text(var t) = elem.payload {
-                                    t.textColor = CodableColor(color: newCol)
-                                    elem.payload = .text(t)
+                    // updateSelectedElement coalesces a drag into one undo step.
+                    CanvaColorButton(
+                        color: Binding(
+                            get: { text.textColor },
+                            set: { newCol in
+                                viewModel.updateSelectedElement { elem in
+                                    if case .text(var t) = elem.payload {
+                                        t.textColor = newCol
+                                        elem.payload = .text(t)
+                                    }
                                 }
                             }
-                        }
-                    ))
-                    .labelsHidden()
+                        ),
+                        size: 22
+                    )
                 }
 
                 // Text Effect
@@ -172,22 +180,25 @@ public struct TypographySection: View {
 
                     if text.effectKind == .outline {
                         HStack {
-                            Text("Outline Tint").font(.system(size: 10, design: .serif)).foregroundColor(.secondary)
+                            Text("Outline color").font(.system(size: 10)).foregroundColor(.secondary)
                             Spacer()
-                            ColorPicker("", selection: Binding(
-                                get: { text.outlineColor.color },
-                                set: { col in
-                                    viewModel.updateSelectedElement { elem in
-                                        if case .text(var t) = elem.payload {
-                                            t.outlineColor = CodableColor(color: col)
-                                            elem.payload = .text(t)
+                            CanvaColorButton(
+                                color: Binding(
+                                    get: { text.outlineColor },
+                                    set: { col in
+                                        viewModel.updateSelectedElement { elem in
+                                            if case .text(var t) = elem.payload {
+                                                t.outlineColor = col
+                                                elem.payload = .text(t)
+                                            }
                                         }
                                     }
-                                }
-                            )).labelsHidden()
+                                ),
+                                size: 20
+                            )
                         }
                         HStack {
-                            Text("Width").font(.system(size: 10, design: .serif)).foregroundColor(.secondary)
+                            Text("Width").font(.system(size: 10)).foregroundColor(.secondary)
                             Slider(value: Binding(
                                 get: { text.outlineWidth },
                                 set: { w in
@@ -203,22 +214,25 @@ public struct TypographySection: View {
                         }
                     } else if text.effectKind == .neon || text.effectKind == .shadow || text.effectKind == .backgroundPill {
                         HStack {
-                            Text("Glow / Tint").font(.system(size: 10, design: .serif)).foregroundColor(.secondary)
+                            Text("Glow color").font(.system(size: 10)).foregroundColor(.secondary)
                             Spacer()
-                            ColorPicker("", selection: Binding(
-                                get: { text.effectColor.color },
-                                set: { col in
-                                    viewModel.updateSelectedElement { elem in
-                                        if case .text(var t) = elem.payload {
-                                            t.effectColor = CodableColor(color: col)
-                                            elem.payload = .text(t)
+                            CanvaColorButton(
+                                color: Binding(
+                                    get: { text.effectColor },
+                                    set: { col in
+                                        viewModel.updateSelectedElement { elem in
+                                            if case .text(var t) = elem.payload {
+                                                t.effectColor = col
+                                                elem.payload = .text(t)
+                                            }
                                         }
                                     }
-                                }
-                            )).labelsHidden()
+                                ),
+                                size: 20
+                            )
                         }
                         HStack {
-                            Text("Intensity").font(.system(size: 10, design: .serif)).foregroundColor(.secondary)
+                            Text("Intensity").font(.system(size: 10)).foregroundColor(.secondary)
                             Slider(value: Binding(
                                 get: { text.effectWidth },
                                 set: { w in
@@ -268,8 +282,8 @@ public struct TypographySection: View {
 
                 // Tracking / Kerning
                 HStack {
-                    Text("Kerning")
-                        .font(.system(size: 11, design: .serif))
+                    Text("Letter spacing")
+                        .font(.system(size: 11))
                         .foregroundColor(.secondary)
                     Slider(value: Binding(
                         get: { text.letterSpacing },
@@ -280,6 +294,7 @@ public struct TypographySection: View {
                                     elem.payload = .text(t)
                                 }
                             }
+                            viewModel.refitSelectedTextHeights()
                         }
                     ), in: -2...15, step: 0.5)
                     Text(String(format: "%.1f", text.letterSpacing))
@@ -289,8 +304,8 @@ public struct TypographySection: View {
 
                 // Line Height / Leading
                 HStack {
-                    Text("Leading")
-                        .font(.system(size: 11, design: .serif))
+                    Text("Line height")
+                        .font(.system(size: 11))
                         .foregroundColor(.secondary)
                     Slider(value: Binding(
                         get: { text.lineSpacing },
@@ -301,6 +316,7 @@ public struct TypographySection: View {
                                     elem.payload = .text(t)
                                 }
                             }
+                            viewModel.refitSelectedTextHeights()
                         }
                     ), in: -5...30, step: 1)
                     Text("\(Int(text.lineSpacing))")
@@ -323,8 +339,8 @@ public struct TypographySection: View {
                     )) {
                         HStack(spacing: 4) {
                             Image(systemName: "circle.circle")
-                            Text("Curved / Arc Text")
-                                .font(.system(size: 11, design: .serif))
+                            Text("Curved text")
+                                .font(.system(size: 11))
                         }
                     }
                     .toggleStyle(.checkbox)
@@ -332,7 +348,7 @@ public struct TypographySection: View {
                     if text.isCurved {
                         HStack {
                             Text("Angle")
-                                .font(.system(size: 10, design: .serif))
+                                .font(.system(size: 10))
                                 .foregroundColor(.secondary)
                             Slider(value: Binding(
                                 get: { text.curveAngle },
@@ -370,8 +386,8 @@ public struct TypographySection: View {
             Image(systemName: icon)
                 .font(.system(size: 10.5, weight: isSelected ? .bold : .regular))
                 .frame(maxWidth: .infinity, minHeight: 20)
-                .background(isSelected ? Color(hex: "#C2410C").opacity(0.25) : Color.clear)
-                .foregroundColor(isSelected ? Color(hex: "#C2410C") : .secondary)
+                .background(isSelected ? PlumaTheme.accent.opacity(0.25) : Color.clear)
+                .foregroundColor(isSelected ? PlumaTheme.accent : .secondary)
                 .clipShape(RoundedRectangle(cornerRadius: 3))
         }
         .buttonStyle(.plain)

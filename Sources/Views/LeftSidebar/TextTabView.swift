@@ -6,7 +6,7 @@ public struct TextTabView: View {
     public var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("TYPOGRAPHY & HEADINGS")
-                .font(.system(size: 12, weight: .bold, design: .serif))
+                .font(.system(size: 12, weight: .bold))
                 .foregroundColor(.primary)
                 .tracking(0.5)
                 .padding(.horizontal, 14)
@@ -71,7 +71,7 @@ public struct TextTabView: View {
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text("Editorial Column Paragraph")
-                                    .font(.system(size: 12, weight: .medium, design: .serif))
+                                    .font(.system(size: 12, weight: .medium))
                                     .foregroundColor(.primary)
                                 Text("Georgia 16pt • Justified Body")
                                     .font(.system(size: 9.5, design: .monospaced))
@@ -116,15 +116,14 @@ public struct TextTabView: View {
                 .hoverHighlight()
 
                     Text("SPECIAL INK STYLES")
-                        .font(.system(size: 11, weight: .bold, design: .serif))
+                        .font(.system(size: 11, weight: .bold))
                         .foregroundColor(Color(hex: "#C2410C"))
                         .tracking(0.3)
                         .padding(.top, 6)
 
                     // Stamped & Letterpress Styles
                     Button(action: {
-                        viewModel.saveHistoryState()
-                        let elem = CanvasElement(
+                                                let elem = CanvasElement(
                             name: "Rubber Stamp Text",
                             payload: .text(TextContent(
                                 text: "★ CERTIFIED NATIVE ★",
@@ -138,12 +137,11 @@ public struct TextTabView: View {
                             )),
                             x: 200, y: 200, width: 340, height: 60
                         )
-                        viewModel.currentPage.elements.append(elem)
-                        viewModel.selectedElementIds = [elem.id]
+                        viewModel.placeNewElement(elem)
                     }) {
                         HStack {
                             Text("★ RUBBER STAMP ★")
-                                .font(.system(size: 11, weight: .bold, design: .serif))
+                                .font(.system(size: 11, weight: .bold))
                                 .foregroundColor(Color(hex: "#C2410C"))
                             Spacer()
                             Image(systemName: "seal.fill")

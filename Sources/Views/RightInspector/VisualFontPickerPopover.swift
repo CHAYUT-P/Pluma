@@ -73,6 +73,7 @@ public struct VisualFontPickerPopover: View {
                                         elem.payload = .text(t)
                                     }
                                 }
+                                viewModel.refitSelectedTextHeights()
                             }
                             dismiss()
                         }) {
@@ -81,11 +82,11 @@ public struct VisualFontPickerPopover: View {
                                     // Render font name in its own typeface!
                                     Text(font.name)
                                         .font(.custom(font.name, size: 15))
-                                        .foregroundColor(selectedFont == font.name ? Color(hex: "#C2410C") : .primary)
+                                        .foregroundColor(selectedFont == font.name ? PlumaTheme.accent : .primary)
                                         .lineLimit(1)
 
                                     Text(font.category)
-                                        .font(.system(size: 9, design: .serif))
+                                        .font(.system(size: 9))
                                         .foregroundColor(.secondary)
                                 }
 
@@ -94,21 +95,21 @@ public struct VisualFontPickerPopover: View {
                                 // License Badge
                                 Text(font.license.badgeLabel)
                                     .font(.system(size: 8.5, weight: .bold))
-                                    .foregroundColor(font.license == .commercial ? Color(hex: "#10B981") : Color(hex: "#D97706"))
+                                    .foregroundColor(font.license == .commercial ? Color(hex: "#10B981") : PlumaTheme.sectionHeader)
                                     .padding(.horizontal, 5)
                                     .padding(.vertical, 2)
-                                    .background(font.license == .commercial ? Color(hex: "#10B981").opacity(0.12) : Color(hex: "#D97706").opacity(0.12))
+                                    .background(font.license == .commercial ? Color(hex: "#10B981").opacity(0.12) : PlumaTheme.sectionHeader.opacity(0.12))
                                     .clipShape(Capsule())
 
                                 if selectedFont == font.name {
                                     Image(systemName: "checkmark")
                                         .font(.system(size: 10, weight: .bold))
-                                        .foregroundColor(Color(hex: "#C2410C"))
+                                        .foregroundColor(PlumaTheme.accent)
                                 }
                             }
                             .padding(.horizontal, 10)
                             .padding(.vertical, 6)
-                            .background(selectedFont == font.name ? Color(hex: "#C2410C").opacity(0.08) : Color.clear)
+                            .background(selectedFont == font.name ? PlumaTheme.accent.opacity(0.08) : Color.clear)
                             .clipShape(RoundedRectangle(cornerRadius: 5))
                         }
                         .buttonStyle(.plain)
@@ -127,7 +128,7 @@ public struct VisualFontPickerPopover: View {
                 .font(.system(size: 9.5, weight: selectedFilter == filter ? .bold : .regular))
                 .padding(.horizontal, 6)
                 .padding(.vertical, 3)
-                .background(selectedFilter == filter ? Color(hex: "#C2410C") : Color.secondary.opacity(0.08))
+                .background(selectedFilter == filter ? PlumaTheme.accent : Color.secondary.opacity(0.08))
                 .foregroundColor(selectedFilter == filter ? .white : .primary)
                 .clipShape(Capsule())
         }

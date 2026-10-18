@@ -59,20 +59,17 @@ public struct CodeTabView: View {
         """)
     ]
 
+    public init(viewModel: CanvasDocumentViewModel) {
+        self.viewModel = viewModel
+    }
+
+    /// One developer drawer (formerly separate Code and Dev tabs): code
+    /// snippets on top, then software-engineering building blocks — windows,
+    /// chips & badges, and one-click diagram stamps.
     public var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("CODE & SNIPPETS")
-                    .font(.system(size: 12, weight: .bold, design: .serif))
-                    .foregroundColor(.primary)
-                    .tracking(0.5)
+        VStack(alignment: .leading, spacing: 10) {
+            SidebarPanelHeader("Code")
 
-                Spacer()
-            }
-            .padding(.horizontal, 14)
-            .padding(.top, 12)
-
-            // Paste Code Direct Button
             Button(action: {
                 if let string = NSPasteboard.general.string(forType: .string) {
                     viewModel.addCodeBlock(code: string)
@@ -81,58 +78,141 @@ public struct CodeTabView: View {
                 }
             }) {
                 HStack(spacing: 6) {
-                    Image(systemName: "doc.on.clipboard.fill")
-                    Text("Paste Code from Clipboard")
-                        .font(.system(size: 11, weight: .semibold))
+                    Image(systemName: "doc.on.clipboard")
+                    Text("Paste Code as Snippet")
+                        .font(PlumaTheme.label(12, weight: .semibold))
                 }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 8)
-                .background(Color(hex: "#C2410C"))
                 .foregroundColor(.white)
-                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 3)
             }
-            .buttonStyle(.plain)
-                .hoverHighlight()
+            .buttonStyle(HoverPillButtonStyle(filled: true))
+            .help("Creates a code block from the clipboard text")
             .padding(.horizontal, 14)
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("SAMPLE TEMPLATES")
-                        .font(.system(size: 10, weight: .bold, design: .serif))
-                        .foregroundColor(Color(hex: "#D97706"))
+                    SidebarSectionHeader("Snippets")
 
                     ForEach(codePresets, id: \.title) { item in
                         Button(action: {
                             viewModel.addCodeBlock(code: item.code, language: item.lang)
                         }) {
-                            VStack(alignment: .leading, spacing: 3) {
-                                HStack {
+                            HStack(alignment: .firstTextBaseline) {
+                                VStack(alignment: .leading, spacing: 2) {
                                     Text(item.title)
-                                        .font(.system(size: 11, weight: .semibold, design: .serif))
+                                        .font(PlumaTheme.label(12, weight: .semibold))
                                         .foregroundColor(.primary)
-                                    Spacer()
-                                    Text(item.lang.rawValue)
-                                        .font(.system(size: 9, design: .monospaced))
+                                    Text(item.desc)
+                                        .font(PlumaTheme.label(10.5, weight: .regular))
                                         .foregroundColor(.secondary)
                                 }
-
-                                Text(item.desc)
-                                    .font(.system(size: 10))
+                                Spacer()
+                                Text(item.lang.rawValue)
+                                    .font(PlumaTheme.label(10, weight: .medium))
                                     .foregroundColor(.secondary)
                             }
                             .padding(10)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(Color.secondary.opacity(0.06))
-                            .clipShape(RoundedRectangle(cornerRadius: 6))
-                            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.12), lineWidth: 1))
+                            .background(RoundedRectangle(cornerRadius: 7).fill(PlumaTheme.control))
                         }
                         .buttonStyle(.plain)
-                .hoverHighlight()
+                        .hoverHighlight(cornerRadius: 7)
+                    }
+
+                    SidebarSectionHeader("Windows & Hardware")
+                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                        presetButton(title: "Terminal", icon: "terminal.fill") { DevKitPresets.terminalWindow() }
+                        presetButton(title: "Browser", icon: "safari.fill") { DevKitPresets.browserWindow() }
+                        presetButton(title: "Database", icon: "cylinder.fill") { DevKitPresets.databaseCylinder() }
+                        presetButton(title: "Server", icon: "server.rack") { DevKitPresets.serverUnit() }
+                    }
+
+                    SidebarSectionHeader("Chips & Badges")
+                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                        presetButton(title: "GET Chip", icon: "network") {
+                            DevKitPresets.apiChip(method: "GET", path: "/api/v1/users")
+                        }
+                        presetButton(title: "POST Chip", icon: "network.badge.shield.half.filled") {
+                            DevKitPresets.apiChip(method: "POST", path: "/api/v1/deploy")
+                        }
+                        presetButton(title: "Badge ✓", icon: "checkmark.seal.fill") { DevKitPresets.statusBadge() }
+                        presetButton(title: "Badge cov", icon: "percent") {
+                            DevKitPresets.statusBadge(left: "coverage", right: "94%")
+                        }
+                        presetButton(title: "Keycap ⌘", icon: "command.square.fill") { DevKitPresets.keyCap("⌘") }
+                        presetButton(title: "TODO Note", icon: "checklist") { DevKitPresets.todoSticky() }
+                    }
+
+                    SidebarSectionHeader("Diagram Stamps")
+                    VStack(spacing: 8) {
+                        diagramButton(title: "Client → API → DB Flow", icon: "arrow.triangle.swap", desc: "Request lifecycle with labeled arrows") {
+                            DevKitPresets.requestFlowDiagram()
+                        }
+                        diagramButton(title: "CI/CD Pipeline", icon: "gearshape.2.fill", desc: "Commit → build → test → deploy chain") {
+                            DevKitPresets.cicdPipeline()
+                        }
+                        diagramButton(title: "Kanban Board", icon: "rectangle.3.group.fill", desc: "3-column sprint board with cards") {
+                            DevKitPresets.kanbanBoard()
+                        }
+                        diagramButton(title: "Git Branch Flow", icon: "point.topleft.down.to.point.bottomright.curvepath.fill", desc: "main + feature branch commits & merge") {
+                            DevKitPresets.gitFlow()
+                        }
                     }
                 }
                 .padding(.horizontal, 14)
                 .padding(.bottom, 20)
             }
         }
+    }
+
+    private func presetButton(title: String, icon: String, bundle: @escaping () -> [CanvasElement]) -> some View {
+        Button(action: {
+            viewModel.insertElements(bundle(), name: title)
+        }) {
+            VStack(spacing: 4) {
+                Image(systemName: icon)
+                    .font(.system(size: 16))
+                    .foregroundColor(PlumaTheme.accentOnSoft)
+                Text(title)
+                    .font(PlumaTheme.label(10.5))
+                    .foregroundColor(.primary)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 9)
+            .background(RoundedRectangle(cornerRadius: 7).fill(PlumaTheme.control))
+        }
+        .buttonStyle(.plain)
+        .hoverHighlight(cornerRadius: 7)
+    }
+
+    private func diagramButton(title: String, icon: String, desc: String, bundle: @escaping () -> [CanvasElement]) -> some View {
+        Button(action: {
+            viewModel.insertElements(bundle(), name: title)
+        }) {
+            HStack(spacing: 8) {
+                Image(systemName: icon)
+                    .font(.system(size: 13))
+                    .foregroundColor(PlumaTheme.accentOnSoft)
+                    .frame(width: 20)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(title)
+                        .font(PlumaTheme.label(12, weight: .semibold))
+                        .foregroundColor(.primary)
+                    Text(desc)
+                        .font(PlumaTheme.label(10.5, weight: .regular))
+                        .foregroundColor(.secondary)
+                }
+                Spacer()
+                Image(systemName: "plus")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(.secondary)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(RoundedRectangle(cornerRadius: 7).fill(PlumaTheme.control))
+        }
+        .buttonStyle(.plain)
+        .hoverHighlight(cornerRadius: 7)
     }
 }

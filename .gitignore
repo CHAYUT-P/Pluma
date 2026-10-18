@@ -35,3 +35,7 @@ LSOverride
 # Pluma specifics
 .clef/
 *.log
+
+# Python
+__pycache__/
+*.pyc

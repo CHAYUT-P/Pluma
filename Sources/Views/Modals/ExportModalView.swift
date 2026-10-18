@@ -10,14 +10,15 @@ public struct ExportModalView: View {
     @State private var exportScale: Double = 2.0
     @State private var jpegQuality: Double = 0.9
 
-    // Light "Studio Newsprint" palette — matches the rest of the app
-    private let paper = Color(hex: "#FAF7F0")
-    private let ink = Color(hex: "#1C1917")
-    private let inkSoft = Color(hex: "#57534E")
-    private let inkFaint = Color(hex: "#A8A29E")
-    private let accent = Color(hex: "#C2410C")
-    private let accentSoft = Color(hex: "#FEEEDF")
-    private let hairline = Color(hex: "#E7E0D2")
+    // "Studio Newsprint" palette — adapts to dark mode so the native pickers
+    // and text stay legible either way.
+    private let paper = PlumaTheme.paper
+    private let ink = PlumaTheme.ink
+    private let inkSoft = Color.secondary
+    private let inkFaint = Color.secondary.opacity(0.6)
+    private let accent = PlumaTheme.accent
+    private let accentSoft = PlumaTheme.accentSoft
+    private let hairline = PlumaTheme.hairline
 
     public var body: some View {
         VStack(spacing: 18) {
@@ -73,7 +74,7 @@ public struct ExportModalView: View {
                 Image(systemName: icon)
                     .font(.system(size: 11))
                 Text(title)
-                    .font(.system(size: 11.5, weight: selectedTab == id ? .bold : .medium, design: .serif))
+                    .font(.system(size: 11.5, weight: selectedTab == id ? .bold : .medium))
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 7)
@@ -93,7 +94,7 @@ public struct ExportModalView: View {
             // Format Selection
             VStack(alignment: .leading, spacing: 8) {
                 Text("FILE FORMAT")
-                    .font(.system(size: 10.5, weight: .bold, design: .serif))
+                    .font(.system(size: 10.5, weight: .bold))
                     .foregroundColor(accent)
 
                 Picker("Format", selection: $selectedFormat) {
@@ -108,7 +109,7 @@ public struct ExportModalView: View {
             if selectedFormat == .png || selectedFormat == .jpeg {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("PRESS RESOLUTION & SUPERSAMPLING")
-                        .font(.system(size: 10.5, weight: .bold, design: .serif))
+                        .font(.system(size: 10.5, weight: .bold))
                         .foregroundColor(accent)
 
                     Picker("Scale", selection: $exportScale) {
@@ -126,7 +127,7 @@ public struct ExportModalView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
                         Text("JPEG Quality")
-                            .font(.system(size: 11, design: .serif))
+                            .font(.system(size: 11))
                             .foregroundColor(inkSoft)
                         Spacer()
                         Text("\(Int(jpegQuality * 100))%")
@@ -142,7 +143,7 @@ public struct ExportModalView: View {
                 Image(systemName: "bolt.fill")
                     .foregroundColor(Color(hex: "#059669"))
                 Text("Vector rasterization rendered at native Apple Silicon Metal speeds")
-                    .font(.system(size: 11, design: .serif))
+                    .font(.system(size: 11))
                     .foregroundColor(Color(hex: "#065F46"))
                 Spacer()
             }
@@ -157,7 +158,7 @@ public struct ExportModalView: View {
             HStack(spacing: 12) {
                 Button(action: { dismiss() }) {
                     Text("Cancel")
-                        .font(.system(size: 12, design: .serif))
+                        .font(.system(size: 12))
                         .foregroundColor(inkSoft)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 7)
@@ -171,7 +172,7 @@ public struct ExportModalView: View {
 
                 Button(action: { performExport(format: selectedFormat) }) {
                     Text("Save to Disk...")
-                        .font(.system(size: 12, weight: .bold, design: .serif))
+                        .font(.system(size: 12, weight: .bold))
                         .foregroundColor(.white)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 8)
@@ -192,7 +193,7 @@ public struct ExportModalView: View {
                         Image(systemName: "photo.stack")
                             .font(.system(size: 12))
                         Text("Export ALL \(viewModel.project.pages.count) Pages as Numbered PNGs…")
-                            .font(.system(size: 11.5, weight: .semibold, design: .serif))
+                            .font(.system(size: 11.5, weight: .semibold))
                         Spacer()
                         Image(systemName: "folder.badge.plus")
                             .font(.system(size: 11))
@@ -254,7 +255,7 @@ public struct ExportModalView: View {
                         .font(.system(size: 13.5, weight: .bold, design: .serif))
                         .foregroundColor(ink)
                     Text("Lossless vector layers, shapes, typography & colors")
-                        .font(.system(size: 11, design: .serif))
+                        .font(.system(size: 11))
                         .foregroundColor(inkSoft)
                 }
             }
@@ -264,7 +265,7 @@ public struct ExportModalView: View {
 
             VStack(alignment: .leading, spacing: 8) {
                 Text("QUICK WORKFLOW")
-                    .font(.system(size: 10.5, weight: .bold, design: .serif))
+                    .font(.system(size: 10.5, weight: .bold))
                     .foregroundColor(accent)
 
                 HStack(spacing: 10) {
@@ -274,8 +275,8 @@ public struct ExportModalView: View {
                     }) {
                         HStack(spacing: 6) {
                             Image(systemName: "doc.on.clipboard.fill")
-                            Text("Copy SVG for Figma (⌘C)")
-                                .font(.system(size: 12, weight: .bold, design: .serif))
+                            Text("Copy SVG for Figma (⌥⌘C)")
+                                .font(.system(size: 12, weight: .bold))
                         }
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 10)
@@ -291,7 +292,7 @@ public struct ExportModalView: View {
                         HStack(spacing: 6) {
                             Image(systemName: "arrow.down.doc.fill")
                             Text("Save .svg File")
-                                .font(.system(size: 12, weight: .bold, design: .serif))
+                                .font(.system(size: 12, weight: .bold))
                         }
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 10)
@@ -303,7 +304,7 @@ public struct ExportModalView: View {
                 }
 
                 Text("💡 Tip: After copying, open any Figma file and press ⌘V. All vector layers, groups, and typography will paste automatically into Figma frames.")
-                    .font(.system(size: 11, design: .serif))
+                    .font(.system(size: 11))
                     .foregroundColor(inkSoft)
                     .padding(.top, 4)
             }
@@ -324,7 +325,7 @@ public struct ExportModalView: View {
                         .font(.system(size: 13.5, weight: .bold, design: .serif))
                         .foregroundColor(ink)
                     Text("Multi-page PDF & Presentation formats supported by Canva")
-                        .font(.system(size: 11, design: .serif))
+                        .font(.system(size: 11))
                         .foregroundColor(inkSoft)
                 }
             }
@@ -334,7 +335,7 @@ public struct ExportModalView: View {
 
             VStack(alignment: .leading, spacing: 8) {
                 Text("CHOOSE CANVA FORMAT")
-                    .font(.system(size: 10.5, weight: .bold, design: .serif))
+                    .font(.system(size: 10.5, weight: .bold))
                     .foregroundColor(accent)
 
                 // Option 1: Multi-Page PDF (Best for Documents & Resumes)
@@ -348,10 +349,10 @@ public struct ExportModalView: View {
 
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Canva Multi-Page PDF (.pdf)")
-                                .font(.system(size: 12, weight: .bold, design: .serif))
+                                .font(.system(size: 12, weight: .bold))
                                 .foregroundColor(ink)
                             Text("Best for A4 Documents, Resumes, Newsletters & Posters")
-                                .font(.system(size: 10.5, design: .serif))
+                                .font(.system(size: 10.5))
                                 .foregroundColor(inkSoft)
                         }
                         Spacer()
@@ -375,10 +376,10 @@ public struct ExportModalView: View {
 
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Canva Presentation Deck (.pptx)")
-                                .font(.system(size: 12, weight: .bold, design: .serif))
+                                .font(.system(size: 12, weight: .bold))
                                 .foregroundColor(ink)
                             Text("Best for 16:9 Pitch Decks & Slide Presentations")
-                                .font(.system(size: 10.5, design: .serif))
+                                .font(.system(size: 10.5))
                                 .foregroundColor(inkSoft)
                         }
                         Spacer()
@@ -396,16 +397,16 @@ public struct ExportModalView: View {
                     performExport(format: .svg)
                 }) {
                     HStack(spacing: 10) {
-                        Image(systemName: "bezierpath")
+                        Image(systemName: "point.topleft.down.to.point.bottomright.curvepath")
                             .font(.system(size: 16))
                             .foregroundColor(Color(hex: "#059669"))
 
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Canva Vector Graphic (.svg)")
-                                .font(.system(size: 12, weight: .bold, design: .serif))
+                                .font(.system(size: 12, weight: .bold))
                                 .foregroundColor(ink)
                             Text("Best for Logos, Illustrations & Badges")
-                                .font(.system(size: 10.5, design: .serif))
+                                .font(.system(size: 10.5))
                                 .foregroundColor(inkSoft)
                         }
                         Spacer()
@@ -419,7 +420,7 @@ public struct ExportModalView: View {
                 .buttonStyle(.plain)
 
                 Text("✨ How to use in Canva: Go to canva.com, click 'Upload' at the top right, and select your exported PDF or PPTX. Canva will automatically convert all pages into fully editable Canva designs.")
-                    .font(.system(size: 11, design: .serif))
+                    .font(.system(size: 11))
                     .foregroundColor(inkSoft)
                     .padding(.top, 4)
             }

@@ -9,6 +9,7 @@ import os
 import json
 import uuid
 import argparse
+import subprocess
 from datetime import datetime, timezone
 
 PROJECTS_DIR = os.path.expanduser("~/Library/Application Support/CanvaNative/Projects")
@@ -64,16 +65,110 @@ def save_project(project_data, path=None):
     
     if not path:
         path = os.path.join(PROJECTS_DIR, f"{proj_id}.canv")
-        
-    with open(path, "w", encoding="utf-8") as f:
+
+    # Write-then-rename: a crash mid-write must never truncate a good .canv.
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(project_data, f, indent=2)
+    os.replace(tmp, path)
     return project_data, path
+
+# --- .canv schema helpers -----------------------------------------------------
+# These emit the exact JSON the app's Codable models decode. Field names, enum
+# raw values, and the {"case": {"_0": value}} payload wrapper all match
+# Sources/Models/*.swift — a file missing a strictly-decoded key fails to open.
+
+def hex_to_col(h):
+    if isinstance(h, str) and h.startswith("#") and len(h) == 7:
+        return {
+            "red": int(h[1:3], 16) / 255.0,
+            "green": int(h[3:5], 16) / 255.0,
+            "blue": int(h[5:7], 16) / 255.0,
+            "opacity": 1.0,
+        }
+    return {"red": 0.0, "green": 0.0, "blue": 0.0, "opacity": 1.0}
+
+def solid_fill(h):
+    """FillStyle: every field is strictly decoded."""
+    return {
+        "type": "Solid Color",
+        "solidColor": hex_to_col(h),
+        "gradientStops": [],
+        "gradientAngle": 90.0,
+        "patternStyle": "Grid Lines",
+        "patternScale": 24.0,
+        "glassBlur": 20.0,
+        "glassOpacity": 0.65,
+    }
+
+def stroke_style(h, width):
+    return {
+        "isEnabled": width > 0,
+        "color": hex_to_col(h),
+        "lineWidth": float(width),
+        "dashPattern": "Solid",
+    }
+
+def no_shadow():
+    return {
+        "isEnabled": False,
+        "color": {"red": 0.0, "green": 0.0, "blue": 0.0, "opacity": 0.25},
+        "radius": 8.0,
+        "x": 0.0,
+        "y": 4.0,
+    }
+
+# ShapeKind raw values (Sources/Models/CanvasElement.swift). CLI accepts the
+# camelCase API names as well as the exact raw values.
+SHAPE_KINDS = {
+    "rectangle": "Rectangle", "roundedrectangle": "Rounded Card",
+    "pill": "Pill / Capsule", "washitape": "Washi Tape",
+    "postagestamp": "Postage Stamp", "waxseal": "Wax Seal",
+    "tornpaper": "Torn Paper", "oxfordborder": "Newspaper Rule",
+    "circle": "Circle / Stamp", "triangle": "Triangle",
+    "star": "Star Badge", "sparklestar": "4-Point Sparkle",
+    "starburst": "Sunburst Badge", "polygon": "Hexagon",
+    "hexagon": "Hexagon", "diamond": "Diamond", "heart": "Heart",
+    "flower": "Petal Flower", "arrow": "Arrow", "chevron": "Chevron Arrow",
+    "speechbubble": "Speech Bubble", "quotebubble": "Quote Callout",
+    "bannerribbon": "Ribbon Banner", "bookmark": "Bookmark Notch",
+    "arch": "Arch Doorway", "shield": "Shield Badge", "tag": "Price Tag",
+    "ticket": "Ticket / Coupon", "cross": "Plus / Cross", "plus": "Plus / Cross",
+    "lightning": "Lightning Bolt", "crescentmoon": "Crescent Moon",
+    "donut": "Ring / Donut", "database": "Database Cylinder",
+    "parallelogram": "Parallelogram", "trapezoid": "Trapezoid",
+    "cloud": "Cloud", "badge": "Embossed Seal", "line": "Line / Hairline",
+}
+
+def shape_kind(name):
+    key = name.replace(" ", "").replace("/", "").replace("-", "").lower()
+    if key in SHAPE_KINDS:
+        return SHAPE_KINDS[key]
+    # exact raw-value match (e.g. "Rounded Card")
+    for raw in SHAPE_KINDS.values():
+        if name == raw:
+            return raw
+    return "Rounded Card"
+
+def base_element(elem_id, name, payload, x, y, width, height, z_index):
+    return {
+        "id": elem_id,
+        "name": name,
+        "payload": payload,
+        "x": float(x), "y": float(y),
+        "width": float(width), "height": float(height),
+        "rotation": 0.0, "opacity": 1.0,
+        "isLocked": False, "isVisible": True,
+        "shadow": no_shadow(),
+        "zIndex": z_index,
+        "backdropBlur": 0.0,
+    }
 
 def create_project(name="Untitled Design", width=1080, height=1080, bg_color="#FFFFFF"):
     proj_id = str(uuid.uuid4()).upper()
     page_id = str(uuid.uuid4()).upper()
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    
+
     project = {
         "id": proj_id,
         "name": name,
@@ -85,15 +180,7 @@ def create_project(name="Untitled Design", width=1080, height=1080, bg_color="#F
                 "name": "Page 1",
                 "width": float(width),
                 "height": float(height),
-                "background": {
-                    "type": "solid",
-                    "solidColor": {
-                        "red": int(bg_color[1:3], 16) / 255.0,
-                        "green": int(bg_color[3:5], 16) / 255.0,
-                        "blue": int(bg_color[5:7], 16) / 255.0,
-                        "alpha": 1.0
-                    }
-                },
+                "background": solid_fill(bg_color),
                 "isTransparent": False,
                 "elements": []
             }
@@ -105,48 +192,38 @@ def add_text_element(project_data, page_index=0, text="New Text", font="Playfair
     pages = project_data.get("pages", [])
     if page_index >= len(pages):
         page_index = 0
-    
-    r = int(color[1:3], 16) / 255.0 if color.startswith("#") and len(color) == 7 else 0.0
-    g = int(color[3:5], 16) / 255.0 if color.startswith("#") and len(color) == 7 else 0.0
-    b = int(color[5:7], 16) / 255.0 if color.startswith("#") and len(color) == 7 else 0.0
-    
+
     elem_id = str(uuid.uuid4()).upper()
     max_z = max([e.get("zIndex", 0) for e in pages[page_index].get("elements", [])] + [0])
-    
-    element = {
-        "id": elem_id,
-        "name": f"Text: {text[:20]}",
-        "payload": {
-            "text": {
-                "text": text,
-                "fontFamily": font,
-                "fontSize": float(size),
-                "fontWeight": int(weight),
-                "isItalic": False,
-                "alignment": {"left": "Left", "center": "Center", "right": "Right"}.get(alignment.lower(), "Left"),
-                "textColor": {"red": r, "green": g, "blue": b, "alpha": 1.0},
-                "letterSpacing": 0.0,
-                "lineSpacing": 4.0,
-                "isUppercase": False,
-                "isUnderline": False,
-                "isStrikethrough": False,
-                "effectKind": "none",
-                "effectColor": {"red": 0.0, "green": 0.0, "blue": 0.0, "alpha": 1.0},
-                "effectOffset": 2.0,
-                "effectBlur": 0.0,
-                "effectThickness": 1.0
-            }
-        },
-        "x": float(x),
-        "y": float(y),
-        "width": float(width),
-        "height": float(height),
-        "rotation": 0.0,
-        "opacity": 1.0,
-        "isLocked": False,
-        "isHidden": False,
-        "zIndex": max_z + 1
-    }
+
+    align = {"left": "Left", "center": "Center", "right": "Right", "justified": "Justified"}.get(alignment.lower(), "Left")
+    element = base_element(
+        elem_id, f"Text: {text[:20]}",
+        {"text": {"_0": {
+            "text": text,
+            "fontFamily": font,
+            "fontSize": float(size),
+            "fontWeight": float(weight),
+            "isItalic": False,
+            "isUnderlined": False,
+            "alignment": align,
+            "textColor": hex_to_col(color),
+            "useGradient": False,
+            "textGradient": solid_fill(color),
+            "letterSpacing": 0.0,
+            "lineSpacing": 4.0,
+            "effectKind": "None",
+            "effectColor": hex_to_col("#000000"),
+            "effectWidth": 1.0,
+            "outlineColor": hex_to_col("#000000"),
+            "outlineWidth": 0.0,
+            "isCurved": False,
+            "curveAngle": 0.0,
+            "cardBorderWidth": 0.0,
+            "cardCornerRadius": 0.0,
+            "cardPadding": 0.0,
+        }}},
+        x, y, width, height, max_z + 1)
     pages[page_index]["elements"].append(element)
     return elem_id
 
@@ -154,46 +231,22 @@ def add_shape_element(project_data, page_index=0, kind="roundedRectangle", fill_
     pages = project_data.get("pages", [])
     if page_index >= len(pages):
         page_index = 0
-        
-    def hex_to_col(h):
-        if h.startswith("#") and len(h) == 7:
-            return {"red": int(h[1:3], 16)/255.0, "green": int(h[3:5], 16)/255.0, "blue": int(h[5:7], 16)/255.0, "alpha": 1.0}
-        return {"red": 0.0, "green": 0.0, "blue": 0.0, "alpha": 1.0}
 
     elem_id = str(uuid.uuid4()).upper()
     max_z = max([e.get("zIndex", 0) for e in pages[page_index].get("elements", [])] + [0])
-    
-    element = {
-        "id": elem_id,
-        "name": f"Shape: {kind}",
-        "payload": {
-            "shape": {
-                "kind": kind,
-                "cornerRadius": float(corner_radius),
-                "starPoints": 5,
-                "polygonSides": 6,
-                "fill": {
-                    "type": "solid",
-                    "solidColor": hex_to_col(fill_color)
-                },
-                "stroke": {
-                    "isEnabled": stroke_width > 0,
-                    "color": hex_to_col(stroke_color),
-                    "lineWidth": float(stroke_width),
-                    "dashPattern": []
-                }
-            }
-        },
-        "x": float(x),
-        "y": float(y),
-        "width": float(width),
-        "height": float(height),
-        "rotation": 0.0,
-        "opacity": 1.0,
-        "isLocked": False,
-        "isHidden": False,
-        "zIndex": max_z + 1
-    }
+
+    raw_kind = shape_kind(kind)
+    element = base_element(
+        elem_id, f"Shape: {raw_kind}",
+        {"shape": {"_0": {
+            "kind": raw_kind,
+            "cornerRadius": float(corner_radius),
+            "starPoints": 5,
+            "polygonSides": 6,
+            "fill": solid_fill(fill_color),
+            "stroke": stroke_style(stroke_color, stroke_width),
+        }}},
+        x, y, width, height, max_z + 1)
     pages[page_index]["elements"].append(element)
     return elem_id
 
@@ -275,8 +328,11 @@ def main():
         save_project(proj, path)
         print(json.dumps({"status": "added_shape", "element_id": elem_id, "project_id": proj["id"]}, indent=2))
     elif args.command == "open":
-        os.system("open /Users/chayut/project/canvas/Pluma.app")
-        print(json.dumps({"status": "opened_app"}))
+        # Prefer the installed app; fall back to the repo build during dev.
+        candidates = ["/Applications/Pluma.app", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "Pluma.app")]
+        target = next((c for c in candidates if os.path.isdir(c)), candidates[0])
+        subprocess.run(["open", target], check=False)
+        print(json.dumps({"status": "opened_app", "path": target}))
     else:
         parser.print_help()
 

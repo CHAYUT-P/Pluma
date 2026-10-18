@@ -20,18 +20,62 @@ public enum ResizeHandlePosition: String, CaseIterable {
 
 @MainActor
 public final class CanvasDocumentViewModel: ObservableObject {
-    @Published public var project: CanvasProject
-    @Published public var activePageIndex: Int = 0
-    @Published public var selectedElementIds: Set<UUID> = []
+    @Published public var project: CanvasProject {
+        didSet { hasOpenedDocument = true }
+    }
+    /// True once a real document is loaded or the virgin project is mutated —
+    /// gates save-on-quit / save-on-Home so a dashboard-only session can't
+    /// write a phantom "Untitled Project" to Projects/ on every launch+quit.
+    public private(set) var hasOpenedDocument = false
+    @Published public var activePageIndex: Int = 0 {
+        didSet {
+            if activePageIndex != oldValue {
+                // Text/code edit sessions can't outlive their page.
+                editingTextElementId = nil
+                editingCodeElementId = nil
+                // A page switch mid-gesture orphans the gesture's
+                // commitLiveTransform — reset the flag or thumbnails/effects
+                // stay degraded forever.
+                if isLiveTransforming {
+                    isLiveTransforming = false
+                    persistProject()
+                }
+                // Selection is per-page: ids from the previous page would make
+                // drag/group/align act on the wrong (or no) elements.
+                let alive = Set(currentPage.elements.map(\.id))
+                let kept = selectedElementIds.filter { alive.contains($0) }
+                if kept != selectedElementIds { selectedElementIds = kept }
+            }
+        }
+    }
+    @Published public var selectedElementIds: Set<UUID> = [] {
+        didSet {
+            if let id = textEditSnapshotId, !selectedElementIds.contains(id) { textEditSnapshotId = nil }
+            if let id = codeEditSnapshotId, !selectedElementIds.contains(id) { codeEditSnapshotId = nil }
+        }
+    }
     @Published public var activeTool: CanvasTool = .select
 
     // Inline Editing
-    @Published public var editingTextElementId: UUID? = nil
-    @Published public var editingCodeElementId: UUID? = nil
+    @Published public var editingTextElementId: UUID? = nil {
+        didSet {
+            if editingTextElementId != oldValue { textEditSnapshotId = nil }
+        }
+    }
+    @Published public var editingCodeElementId: UUID? = nil {
+        didSet {
+            if editingCodeElementId != oldValue { codeEditSnapshotId = nil }
+        }
+    }
+
+    /// Element whose current edit session already pushed an undo state (so a
+    /// typing run is ONE undo step instead of per-keystroke or none at all).
+    private var textEditSnapshotId: UUID? = nil
+    private var codeEditSnapshotId: UUID? = nil
 
     // Collapsible Sidebars
     @Published public var isLeftSidebarVisible: Bool = true
-    @Published public var isRightInspectorVisible: Bool = false
+    @Published public var isRightInspectorVisible: Bool = true
 
     // Viewport
     @Published public var zoomScale: Double = 0.65
@@ -43,6 +87,7 @@ public final class CanvasDocumentViewModel: ObservableObject {
     @Published public var showPresetPickerModal: Bool = false
     @Published public var showToast: Bool = false
     @Published public var toastMessage: String = ""
+    @Published public var toastIsError: Bool = false
 
     // Snapping Guides
     @Published public var activeGuides: [SnappingGuide] = []
@@ -66,8 +111,39 @@ public final class CanvasDocumentViewModel: ObservableObject {
     public let historyManager = HistoryManager()
     public let performanceMonitor = PerformanceMonitor()
 
-    public init(project: CanvasProject = CanvasProject()) {
+    /// Virgin-session init — project is the placeholder "Untitled Project" and
+    /// must NOT count as an opened document (see hasOpenedDocument).
+    public init() {
+        self.project = CanvasProject()
+        commonInit()
+        // commonInit mutates project (starter page/background) — those writes
+        // fire project's didSet; they are setup, not an opened document.
+        hasOpenedDocument = false
+    }
+
+    /// Constructing a view model around an existing project means that project
+    /// is the opened document — mark it so save-on-quit/Home persists it.
+    public init(project: CanvasProject) {
         self.project = project
+        commonInit()
+        hasOpenedDocument = true
+    }
+
+    /// The open document was trashed from the dashboard — drop it entirely and
+    /// return to the closed state. Without this, save-on-quit / Home navigation
+    /// would resurrect the file back into Projects/ (trashed ids are also
+    /// write-gated in ProjectStorage as a second layer).
+    public func closeDocument() {
+        if isLiveTransforming { isLiveTransforming = false }
+        project = CanvasProject()   // didSet fires; flag is reset below
+        commonInit()
+        activePageIndex = 0
+        selectedElementIds.removeAll()
+        historyManager.clear()
+        hasOpenedDocument = false
+    }
+
+    private func commonInit() {
         if self.project.pages.isEmpty {
             self.project.pages = [CanvasPage(background: .solid(.white))]
         }
@@ -105,8 +181,12 @@ public final class CanvasDocumentViewModel: ObservableObject {
         }
         set {
             guard activePageIndex < project.pages.count else { return }
-            project.pages[activePageIndex] = newValue
-            project.modifiedAt = Date()
+            // Page + timestamp in ONE assignment: the canvas re-renders on every
+            // `project` publish, and writing them separately published twice.
+            var updated = project
+            updated.pages[activePageIndex] = newValue
+            updated.modifiedAt = Date()
+            project = updated
             ProjectStorage.shared.saveProjectDebounced(project)
         }
     }
@@ -115,32 +195,112 @@ public final class CanvasDocumentViewModel: ObservableObject {
         currentPage.elements.filter { selectedElementIds.contains($0.id) }
     }
 
+    // MARK: - Render Cache
+
+    private var zOrderCache: [UUID: (source: [CanvasElement], sorted: [CanvasElement])] = [:]
+
+    /// A page's elements in paint order (ascending zIndex), memoized per page.
+    /// Every drag tick republishes `project`, and Document mode renders every
+    /// page — re-sorting all of them per frame was pure waste. Untouched pages
+    /// keep the same array buffer, so the `==` check is O(1) for them (Array
+    /// equality short-circuits on buffer identity); only the edited page re-sorts.
+    public func zOrderedElements(of page: CanvasPage) -> [CanvasElement] {
+        if let hit = zOrderCache[page.id], hit.source == page.elements {
+            return hit.sorted
+        }
+        let sorted = page.elements.sorted { $0.zIndex < $1.zIndex }
+        if zOrderCache.count > project.pages.count + 8 {
+            let live = Set(project.pages.map(\.id))
+            zOrderCache = zOrderCache.filter { live.contains($0.key) }
+        }
+        zOrderCache[page.id] = (page.elements, sorted)
+        return sorted
+    }
+
+    /// Deterministic "representative" of the selection (topmost element) —
+    /// `Set.first` changed between renders, so the inspector flickered between
+    /// members of a multi-selection.
     public var primarySelectedElement: CanvasElement? {
-        guard let firstId = selectedElementIds.first else { return nil }
-        return currentPage.elements.first(where: { $0.id == firstId })
+        guard !selectedElementIds.isEmpty else { return nil }
+        if selectedElementIds.count == 1, let id = selectedElementIds.first {
+            return currentPage.elements.first(where: { $0.id == id })
+        }
+        return currentPage.elements
+            .filter { selectedElementIds.contains($0.id) }
+            .max(by: { $0.zIndex < $1.zIndex })
     }
 
     // MARK: - History Recording
 
     public func saveHistoryState() {
         historyManager.pushState(project)
+        lastHistoryPush = Date()
+    }
+
+    private var lastHistoryPush: Date = .distantPast
+    private var lastCoalescedEdit: Date = .distantPast
+    private var lastCoalescedSelection: Set<UUID> = []
+
+    /// One undo step per burst of inspector edits: a slider drag or a run of
+    /// keystrokes in a field becomes a single step instead of none (the old
+    /// behaviour — ⌘Z then wiped the previous action too) or one per tick.
+    /// Skipped when the caller already pushed a snapshot for this edit.
+    public func recordCoalescedEdit() {
+        let now = Date()
+        let continuing = now.timeIntervalSince(lastCoalescedEdit) < 0.8 && lastCoalescedSelection == selectedElementIds
+        let callerJustPushed = now.timeIntervalSince(lastHistoryPush) < 0.05
+        if !continuing && !callerJustPushed {
+            saveHistoryState()
+        }
+        lastCoalescedEdit = now
+        lastCoalescedSelection = selectedElementIds
+    }
+
+    /// Persist a project-level mutation (page add/remove/reorder, rename,
+    /// template swap). Anything writing `project` outside the `currentPage`
+    /// setter MUST call this — a plain `project.pages` write never reaches disk.
+    private func persistProject() {
+        project.modifiedAt = Date()
+        ProjectStorage.shared.saveProjectDebounced(project)
     }
 
     public func undo() {
         if let prev = historyManager.undo(currentProject: project) {
             project = prev
-            selectedElementIds.removeAll()
+            retainSurvivingSelection()
             editingTextElementId = nil
-            showTemporaryToast("↩ Undo")
+            editingCodeElementId = nil
+            textEditSnapshotId = nil
+            codeEditSnapshotId = nil
+            // project has no autosave didSet — undo must persist like an edit.
+            persistProject()
         }
+    }
+
+    /// Keeps whatever is still on the page selected across undo/redo (Figma/Canva
+    /// behaviour) instead of dropping the selection every time.
+    private func retainSurvivingSelection() {
+        // ⌘Z mid-gesture tears down the selection overlay before its onEnded
+        // fires — clear gesture state so the next resize starts fresh (and
+        // records its own undo step) instead of reusing a stale frame.
+        activeResizeInitialFrame = nil
+        if isLiveTransforming { isLiveTransforming = false }
+        if !project.pages.indices.contains(activePageIndex) {
+            activePageIndex = max(0, project.pages.count - 1)
+        }
+        let alive = Set(currentPage.elements.map(\.id))
+        selectedElementIds = selectedElementIds.filter { alive.contains($0) }
     }
 
     public func redo() {
         if let next = historyManager.redo(currentProject: project) {
             project = next
-            selectedElementIds.removeAll()
+            retainSurvivingSelection()
             editingTextElementId = nil
-            showTemporaryToast("↪ Redo")
+            editingCodeElementId = nil
+            textEditSnapshotId = nil
+            codeEditSnapshotId = nil
+            persistProject()
         }
     }
 
@@ -171,22 +331,24 @@ public final class CanvasDocumentViewModel: ObservableObject {
         guard selectedElementIds.count > 1 else { return }
         saveHistoryState()
         let newGroupId = UUID()
-        for id in selectedElementIds {
-            if let idx = currentPage.elements.firstIndex(where: { $0.id == id }) {
-                currentPage.elements[idx].groupId = newGroupId
-            }
+        // Mutate a local copy and write the page once — each write through the
+        // `currentPage` setter republishes the whole project and kicks autosave.
+        var page = currentPage
+        for idx in page.elements.indices where selectedElementIds.contains(page.elements[idx].id) {
+            page.elements[idx].groupId = newGroupId
         }
+        currentPage = page
         showTemporaryToast("Grouped (\(selectedElementIds.count) elements)")
     }
 
     public func ungroupSelectedElements() {
         guard !selectedElementIds.isEmpty else { return }
         saveHistoryState()
-        for id in selectedElementIds {
-            if let idx = currentPage.elements.firstIndex(where: { $0.id == id }) {
-                currentPage.elements[idx].groupId = nil
-            }
+        var page = currentPage
+        for idx in page.elements.indices where selectedElementIds.contains(page.elements[idx].id) {
+            page.elements[idx].groupId = nil
         }
+        currentPage = page
         showTemporaryToast("Ungrouped elements")
     }
 
@@ -212,7 +374,7 @@ public final class CanvasDocumentViewModel: ObservableObject {
     }
 
     public func selectAll() {
-        selectedElementIds = Set(currentPage.elements.map { $0.id })
+        selectedElementIds = Set(currentPage.elements.filter { $0.isVisible }.map { $0.id })
     }
 
     public func deselectAll() {
@@ -253,9 +415,16 @@ public final class CanvasDocumentViewModel: ObservableObject {
             initialH = 180
         }
 
+        // Open-path kinds (hairlines) can't be filled — draw them via stroke
+        // in the fill color so an inserted Line isn't invisible.
+        let lineStroke = StrokeStyle(
+            isEnabled: kind == .line,
+            color: fill.solidColor,
+            lineWidth: max(2, initialH)
+        )
         let element = CanvasElement(
             name: kind.rawValue,
-            payload: .shape(ShapeContent(kind: kind, cornerRadius: 12, fill: fill)),
+            payload: .shape(ShapeContent(kind: kind, cornerRadius: 12, fill: fill, stroke: lineStroke)),
             x: insertionOrigin(elementWidth: initialW, elementHeight: initialH).x,
             y: insertionOrigin(elementWidth: initialW, elementHeight: initialH).y,
             width: initialW,
@@ -277,20 +446,23 @@ public final class CanvasDocumentViewModel: ObservableObject {
     ) {
         saveHistoryState()
         let textOrigin = insertionOrigin(elementWidth: 440, elementHeight: 90)
+        let content = TextContent(
+            text: text,
+            fontFamily: fontFamily,
+            fontSize: fontSize,
+            fontWeight: fontWeight,
+            alignment: .center,
+            textColor: color
+        )
+        // Start tight to the content (Canva-style) instead of a hardcoded box.
+        let fittedH = Self.fittedHeightForText(content, width: 440)
         let element = CanvasElement(
             name: "Heading Text",
-            payload: .text(TextContent(
-                text: text,
-                fontFamily: fontFamily,
-                fontSize: fontSize,
-                fontWeight: fontWeight,
-                alignment: .center,
-                textColor: color
-            )),
+            payload: .text(content),
             x: textOrigin.x,
             y: textOrigin.y,
             width: 440,
-            height: 90,
+            height: fittedH,
             zIndex: (currentPage.elements.map { $0.zIndex }.max() ?? 0) + 1
         )
         currentPage.elements.append(element)
@@ -386,6 +558,41 @@ public final class CanvasDocumentViewModel: ObservableObject {
         selectedElementIds = [element.id]
         activeTool = .select
         showTemporaryToast("Added Code Block")
+    }
+
+    /// Inserts a bundle of elements (a DevKit preset / composite component):
+    /// the bundle is translated so its bounding box lands at the insertion
+    /// origin, all members share a groupId, stacking continues after the
+    /// current top, and the whole bundle is selected.
+    public func insertElements(_ bundle: [CanvasElement], name: String) {
+        guard !bundle.isEmpty else { return }
+        saveHistoryState()
+
+        var minX = Double.greatestFiniteMagnitude
+        var minY = Double.greatestFiniteMagnitude
+        var maxX = -Double.greatestFiniteMagnitude
+        var maxY = -Double.greatestFiniteMagnitude
+        for el in bundle {
+            minX = min(minX, el.x); minY = min(minY, el.y)
+            maxX = max(maxX, el.x + el.width); maxY = max(maxY, el.y + el.height)
+        }
+        let origin = insertionOrigin(elementWidth: maxX - minX, elementHeight: maxY - minY)
+        var z = (currentPage.elements.map { $0.zIndex }.max() ?? 0) + 1
+        let gid = bundle.count > 1 ? UUID() : nil
+        var ids: [UUID] = []
+        for el in bundle {
+            var e = el
+            e.x += Double(origin.x) - minX
+            e.y += Double(origin.y) - minY
+            e.groupId = gid
+            e.zIndex = z
+            z += 1
+            currentPage.elements.append(e)
+            ids.append(e.id)
+        }
+        selectedElementIds = Set(ids)
+        activeTool = .select
+        showTemporaryToast("Added \(name)")
     }
 
     public func addIcon(_ symbolName: String, color: CodableColor = .inkBlack) {
@@ -586,17 +793,83 @@ public final class CanvasDocumentViewModel: ObservableObject {
 
     public func updateSelectedElement(_ modify: (inout CanvasElement) -> Void) {
         guard !selectedElementIds.isEmpty else { return }
-        for id in selectedElementIds {
-            if let index = currentPage.elements.firstIndex(where: { $0.id == id }) {
-                guard !currentPage.elements[index].isLocked else { continue }
-                modify(&currentPage.elements[index])
-            }
+        var page = currentPage
+        var changed = false
+        for index in page.elements.indices where selectedElementIds.contains(page.elements[index].id) {
+            guard !page.elements[index].isLocked else { continue }
+            let before = page.elements[index]
+            modify(&page.elements[index])
+            if page.elements[index] != before { changed = true }
         }
+        guard changed else { return }
+        recordCoalescedEdit()
+        // One write through the setter (one publish + one autosave) instead of
+        // one per selected element.
+        currentPage = page
     }
 
     public func updateElement(id: UUID, _ modify: (inout CanvasElement) -> Void) {
         guard let index = currentPage.elements.firstIndex(where: { $0.id == id }) else { return }
         modify(&currentPage.elements[index])
+    }
+
+    // MARK: - Text Auto-Fit (Canva / PowerPoint parity)
+
+    /// Tight height for a text payload at the given box width (internal margins
+    /// honored — see TextMeasurement).
+    public static func fittedHeightForText(_ t: TextContent, width: Double) -> Double {
+        TextMeasurement.fittedHeight(for: t, width: width)
+    }
+
+    /// Sets text content and grows the box to fit (Canva auto-height). Never
+    /// shrinks below one line so the box stays selectable.
+    public func updateTextAndFitHeight(id: UUID, newText: String) {
+        guard let index = currentPage.elements.firstIndex(where: { $0.id == id }) else { return }
+        var el = currentPage.elements[index]
+        guard case .text(var t) = el.payload else { return }
+        // Snapshot the pre-edit state once per editing session so Cmd+Z undoes
+        // the whole typing run rather than one keystroke (or nothing, as before).
+        if t.text != newText && textEditSnapshotId != id {
+            saveHistoryState()
+            textEditSnapshotId = id
+        }
+        t.text = newText
+        el.payload = .text(t)
+        el.height = Self.fittedHeightForText(t, width: el.width)
+        currentPage.elements[index] = el
+    }
+
+    /// Sets code content and refits the block height. One undo state per edit
+    /// session — same contract as `updateTextAndFitHeight`.
+    public func updateCodeAndFitHeight(id: UUID, newCode: String) {
+        guard let index = currentPage.elements.firstIndex(where: { $0.id == id }) else { return }
+        var el = currentPage.elements[index]
+        guard case .code(var c) = el.payload else { return }
+        if c.code != newCode && codeEditSnapshotId != id {
+            saveHistoryState()
+            codeEditSnapshotId = id
+        }
+        c.code = newCode
+        el.payload = .code(c)
+        el.height = Self.calculateCodeBlockHeight(for: c)
+        currentPage.elements[index] = el
+    }
+
+    /// Reflows selected text boxes after a width/metric change (inspector edits).
+    /// Boxes stay tight to their content like Canva (no stale empty space, no
+    /// clipping). Manual top/bottom stretches are re-tightened on the next
+    /// content or metric edit — same tradeoff Canva makes for auto-height boxes.
+    public func refitSelectedTextHeights() {
+        for id in selectedElementIds {
+            guard let index = currentPage.elements.firstIndex(where: { $0.id == id }) else { continue }
+            var el = currentPage.elements[index]
+            guard case .text(let t) = el.payload else { continue }
+            let fitted = Self.fittedHeightForText(t, width: el.width)
+            if abs(fitted - el.height) > 0.5 {
+                el.height = fitted
+                currentPage.elements[index] = el
+            }
+        }
     }
 
     // MARK: - Drag & Snapping (1:1 Mouse Cursor Accurate)
@@ -607,41 +880,54 @@ public final class CanvasDocumentViewModel: ObservableObject {
         let deltaCanvasX = delta.width
         let deltaCanvasY = delta.height
 
-        guard let firstId = selectedElementIds.first,
-              let firstStart = startPositions[firstId],
-              let firstElem = currentPage.elements.first(where: { $0.id == firstId }) else { return }
+        // Snap the whole selection's box (at its start positions), not an
+        // arbitrary member — Set.first made multi-drags snap unpredictably.
+        var startBox = CGRect.null
+        for el in currentPage.elements where selectedElementIds.contains(el.id) {
+            guard let start = startPositions[el.id] else { continue }
+            startBox = startBox.union(CGRect(x: start.x, y: start.y, width: el.width, height: el.height))
+        }
+        guard !startBox.isNull else { return }
 
-        var proposedX = firstStart.x + deltaCanvasX
-        var proposedY = firstStart.y + deltaCanvasY
+        var finalDeltaX = deltaCanvasX
+        var finalDeltaY = deltaCanvasY
 
         if applySnapping && enableSnapping {
             let otherRects = currentPage.elements
-                .filter { !selectedElementIds.contains($0.id) }
+                .filter { $0.isVisible && !selectedElementIds.contains($0.id) }
                 .map { $0.frame }
 
             let snapRes = SnappingEngine.snap(
-                rect: CGRect(x: proposedX, y: proposedY, width: firstElem.width, height: firstElem.height),
+                rect: startBox.offsetBy(dx: deltaCanvasX, dy: deltaCanvasY),
                 against: otherRects,
                 canvasSize: CGSize(width: currentPage.width, height: currentPage.height),
-                rulerGuides: currentPage.guides ?? []
+                rulerGuides: currentPage.guides ?? [],
+                // Constant ~6 screen points of "pull" at any zoom level.
+                threshold: SnappingEngine.snapThreshold / max(0.05, zoomScale)
             )
-            proposedX = snapRes.snappedOrigin.x
-            proposedY = snapRes.snappedOrigin.y
+            finalDeltaX = snapRes.snappedOrigin.x - startBox.minX
+            finalDeltaY = snapRes.snappedOrigin.y - startBox.minY
             activeGuides = snapRes.activeGuides
         } else {
             activeGuides = []
         }
 
-        let finalDeltaX = proposedX - firstStart.x
-        let finalDeltaY = proposedY - firstStart.y
-
-        for id in selectedElementIds {
-            if let startPos = startPositions[id],
-               let index = currentPage.elements.firstIndex(where: { $0.id == id }) {
-                guard !currentPage.elements[index].isLocked else { continue }
-                currentPage.elements[index].x = startPos.x + finalDeltaX
-                currentPage.elements[index].y = startPos.y + finalDeltaY
+        batchLiveWrites {
+            for id in selectedElementIds {
+                if let startPos = startPositions[id],
+                   let index = currentPage.elements.firstIndex(where: { $0.id == id }) {
+                    guard !currentPage.elements[index].isLocked else { continue }
+                    let nx = startPos.x + finalDeltaX
+                    let ny = startPos.y + finalDeltaY
+                    writeElementLive(index: index) {
+                        $0.x = nx
+                        $0.y = ny
+                    }
+                }
             }
+        }
+        if !isLiveTransforming {
+            isLiveTransforming = true
         }
     }
 
@@ -649,13 +935,72 @@ public final class CanvasDocumentViewModel: ObservableObject {
         activeGuides.removeAll()
         // Anchored connectors follow their endpoints after any confirmed move.
         syncConnectors(touching: selectedElementIds)
+        commitLiveTransform()
     }
 
     // MARK: - Resizing & Handles (Rotation-Aware Canva/Figma Transform Engine)
 
+    /// True while a resize / drag / rotate gesture is actively streaming ticks.
+    /// Views use this to skip expensive per-frame work (sync thumbnail renders,
+    /// multi-pass text shadows) until the gesture commits. Toggled twice per
+    /// gesture, so its own publishes are cheap — the 60Hz ticks in between must
+    /// NOT trigger autosave / modifiedAt churn (see writeElementLive).
+    @Published public var isLiveTransforming: Bool = false
+
     public var activeResizeInitialFrame: CGRect? = nil
     public var activeResizeElementId: UUID? = nil
     public var activeResizeInitialRotation: Double = 0
+    // Initial text metrics for Canva-style corner-drag font scaling.
+    public var activeResizeInitialFontSize: Double = 0
+    public var activeResizeInitialLineSpacing: Double = 0
+    public var activeResizeInitialLetterSpacing: Double = 0
+    public var activeResizeIsText: Bool = false
+
+    /// Writes one element straight into the page WITHOUT touching
+    /// `modifiedAt` or kicking the autosave debounce. Use for every
+    /// per-tick update during a live gesture; call `commitLiveTransform()`
+    /// once on gesture end. (Going through the `currentPage` setter on every
+    /// tick was a major source of resize lag.)
+    @MainActor
+    private func writeElementLive(index: Int, _ modify: (inout CanvasElement) -> Void) {
+        if liveBatchElements != nil {
+            modify(&liveBatchElements![index])
+            return
+        }
+        guard activePageIndex < project.pages.count else { return }
+        modify(&project.pages[activePageIndex].elements[index])
+    }
+
+    /// Buffer for `batchLiveWrites` — nil outside a batch.
+    private var liveBatchElements: [CanvasElement]? = nil
+
+    /// Runs `body` with every `writeElementLive` buffered on a local copy of the
+    /// page's elements, then publishes once. A multi-selection drag used to
+    /// republish `project` (and re-render every page) once per member per tick.
+    @MainActor
+    private func batchLiveWrites(_ body: () -> Void) {
+        guard activePageIndex < project.pages.count, liveBatchElements == nil else {
+            body()
+            return
+        }
+        liveBatchElements = project.pages[activePageIndex].elements
+        body()
+        if let batched = liveBatchElements {
+            liveBatchElements = nil
+            if batched != project.pages[activePageIndex].elements {
+                project.pages[activePageIndex].elements = batched
+            }
+        }
+    }
+
+    /// Persists a finished gesture: timestamp + debounced autosave + flag reset.
+    @MainActor
+    private func commitLiveTransform() {
+        persistProject()
+        if isLiveTransforming {
+            isLiveTransforming = false
+        }
+    }
 
     public func beginResize(id: UUID, handle: ResizeHandlePosition) {
         guard let index = currentPage.elements.firstIndex(where: { $0.id == id }),
@@ -664,6 +1009,18 @@ public final class CanvasDocumentViewModel: ObservableObject {
         activeResizeElementId = id
         activeResizeInitialFrame = currentPage.elements[index].frame
         activeResizeInitialRotation = currentPage.elements[index].rotation
+        if case .text(let t) = currentPage.elements[index].payload {
+            activeResizeIsText = true
+            activeResizeInitialFontSize = t.fontSize
+            activeResizeInitialLineSpacing = t.lineSpacing
+            activeResizeInitialLetterSpacing = t.letterSpacing
+        } else {
+            activeResizeIsText = false
+            activeResizeInitialFontSize = 0
+            activeResizeInitialLineSpacing = 0
+            activeResizeInitialLetterSpacing = 0
+        }
+        isLiveTransforming = true
     }
 
     public func updateResize(
@@ -793,12 +1150,50 @@ public final class CanvasDocumentViewModel: ObservableObject {
         let shiftX = (center0.x + world0.dx) - (center1.x + world1.dx)
         let shiftY = (center0.y + world0.dy) - (center1.y + world1.dy)
 
-        var elem = currentPage.elements[index]
-        elem.x = tentativeFrame.origin.x + shiftX
-        elem.y = tentativeFrame.origin.y + shiftY
-        elem.width = tentativeFrame.width
-        elem.height = tentativeFrame.height
-        currentPage.elements[index] = elem
+        // --- Step 4: Canva/PowerPoint text behavior + cheap live write ---
+        // NOTE: `translation` must already be in canvas units (callers divide
+        // the screen-space gesture translation by zoomScale — see
+        // SelectionOverlayView). Do NOT divide here or zoomed resizes double-scale.
+        let isCorner: Bool = {
+            switch handle {
+            case .topLeft, .topRight, .bottomLeft, .bottomRight: return true
+            case .top, .left, .right, .bottom: return false
+            }
+        }()
+        let isSideWidth: Bool = (handle == .left || handle == .right)
+        let isHeightOnly: Bool = (handle == .top || handle == .bottom)
+
+        writeElementLive(index: index) { elem in
+            elem.x = tentativeFrame.origin.x + shiftX
+            elem.y = tentativeFrame.origin.y + shiftY
+            elem.width = tentativeFrame.width
+            elem.height = tentativeFrame.height
+
+            // Text boxes behave like Canva / PowerPoint:
+            // • side handles reflow the paragraph and auto-fit height (font kept)
+            // • top/bottom never clip — height is at least the fitted height
+            // • corner handles scale the font (Canva) then auto-fit height
+            if case .text(var t) = elem.payload, activeResizeIsText, activeResizeInitialFontSize > 0 {
+                if isCorner {
+                    let scale = max(0.15, elem.width / max(1, initialFrame.width))
+                    let newFont = min(400, max(6, activeResizeInitialFontSize * scale))
+                    let fontRatio = newFont / max(1, activeResizeInitialFontSize)
+                    t.fontSize = newFont
+                    t.lineSpacing = activeResizeInitialLineSpacing * fontRatio
+                    t.letterSpacing = activeResizeInitialLetterSpacing * fontRatio
+                    elem.payload = .text(t)
+                    elem.height = TextMeasurement.fittedHeight(for: t, width: elem.width)
+                } else if isSideWidth {
+                    elem.height = TextMeasurement.fittedHeight(for: t, width: elem.width)
+                } else if isHeightOnly {
+                    let fitted = TextMeasurement.fittedHeight(for: t, width: elem.width)
+                    elem.height = max(elem.height, fitted)
+                }
+            }
+        }
+        if !isLiveTransforming {
+            isLiveTransforming = true
+        }
     }
 
     /// The stationary anchor (opposite corner / edge midpoint) for a resize handle.
@@ -821,6 +1216,231 @@ public final class CanvasDocumentViewModel: ObservableObject {
         }
         activeResizeInitialFrame = nil
         activeResizeElementId = nil
+        activeResizeIsText = false
+        commitLiveTransform()
+    }
+
+    // MARK: - Multi-Selection / Group Transform (Figma-style collective box)
+
+    /// Axis-aligned union of every selected element's rotated bounds — the
+    /// collective bounding box the multi-select overlay draws and transforms.
+    public var selectionBounds: CGRect {
+        selectedElements.reduce(CGRect.null) { $0.union($1.rotatedCanvasBounds) }
+    }
+
+    /// Marquee hit-testing may land inside only SOME members of a group; expand
+    /// the hit set so the whole group is always selected/ transformed together.
+    public func expandSelectionForGroups(_ ids: Set<UUID>) -> Set<UUID> {
+        var result = ids
+        let hitGroupIds = Set(currentPage.elements.filter { ids.contains($0.id) }.compactMap { $0.groupId })
+        guard !hitGroupIds.isEmpty else { return result }
+        for el in currentPage.elements where el.groupId.map({ hitGroupIds.contains($0) }) == true {
+            result.insert(el.id)
+        }
+        return result
+    }
+
+    public var groupResizeInitialBounds: CGRect? = nil
+    public var groupResizeInitialFrames: [UUID: CGRect] = [:]
+    public var groupResizeInitialText: [UUID: (fontSize: Double, lineSpacing: Double, letterSpacing: Double)] = [:]
+
+    public func beginGroupResize() {
+        let members = selectedElements.filter { !$0.isLocked }
+        guard !members.isEmpty else { return }
+        saveHistoryState()
+        groupResizeInitialFrames = [:]
+        groupResizeInitialText = [:]
+        var union = CGRect.null
+        for el in members {
+            groupResizeInitialFrames[el.id] = el.frame
+            if case .text(let t) = el.payload {
+                groupResizeInitialText[el.id] = (t.fontSize, t.lineSpacing, t.letterSpacing)
+            }
+            union = union.union(el.rotatedCanvasBounds)
+        }
+        groupResizeInitialBounds = union
+        isLiveTransforming = true
+    }
+
+    /// Scales every selected element linearly about the stationary anchor — the
+    /// collective box is axis-aligned so the translation needs no rotation
+    /// projection (theta = 0).
+    public func updateGroupResize(
+        handle: ResizeHandlePosition,
+        translation: CGSize,
+        lockAspectRatio: Bool = false
+    ) {
+        guard let initialBounds = groupResizeInitialBounds else { return }
+
+        let localDX = translation.width
+        let localDY = translation.height
+        var w = initialBounds.width
+        var h = initialBounds.height
+        let aspect = max(0.01, initialBounds.width / max(0.01, initialBounds.height))
+        let minW: Double = 24.0
+        let minH: Double = 20.0
+
+        switch handle {
+        case .topLeft:
+            var dw = -localDX
+            var dh = -localDY
+            if lockAspectRatio { let d = max(dw, dh); dw = d; dh = d / aspect }
+            w = max(minW, initialBounds.width + dw)
+            h = max(minH, initialBounds.height + dh)
+        case .top:
+            h = max(minH, initialBounds.height - localDY)
+        case .topRight:
+            var dw = localDX
+            var dh = -localDY
+            if lockAspectRatio { let d = max(dw, dh); dw = d; dh = d / aspect }
+            w = max(minW, initialBounds.width + dw)
+            h = max(minH, initialBounds.height + dh)
+        case .left:
+            w = max(minW, initialBounds.width - localDX)
+        case .right:
+            w = max(minW, initialBounds.width + localDX)
+        case .bottomLeft:
+            var dw = -localDX
+            var dh = localDY
+            if lockAspectRatio { let d = max(dw, dh); dw = d; dh = d / aspect }
+            w = max(minW, initialBounds.width + dw)
+            h = max(minH, initialBounds.height + dh)
+        case .bottom:
+            h = max(minH, initialBounds.height + localDY)
+        case .bottomRight:
+            var dw = localDX
+            var dh = localDY
+            if lockAspectRatio { let d = max(dw, dh); dw = d; dh = d / aspect }
+            w = max(minW, initialBounds.width + dw)
+            h = max(minH, initialBounds.height + dh)
+        }
+
+        let scaleX = w / max(1, initialBounds.width)
+        let scaleY = h / max(1, initialBounds.height)
+        let anchor = anchorPoint(for: handle, in: initialBounds)
+        let isCorner: Bool = {
+            switch handle {
+            case .topLeft, .topRight, .bottomLeft, .bottomRight: return true
+            case .top, .left, .right, .bottom: return false
+            }
+        }()
+        // Corner drags scale type along with the box (tightest axis wins so the
+        // text never outgrows its frame); edge drags keep the font and reflow.
+        let fontScale = isCorner ? min(scaleX, scaleY) : 1.0
+
+        batchLiveWrites {
+            for el in selectedElements {
+                guard let startFrame = groupResizeInitialFrames[el.id],
+                      let index = currentPage.elements.firstIndex(where: { $0.id == el.id }),
+                      !currentPage.elements[index].isLocked else { continue }
+                writeElementLive(index: index) { elem in
+                    elem.x = anchor.x + (startFrame.origin.x - anchor.x) * scaleX
+                    elem.y = anchor.y + (startFrame.origin.y - anchor.y) * scaleY
+                    elem.width = max(1, startFrame.width * scaleX)
+                    elem.height = max(1, startFrame.height * scaleY)
+
+                    if case .text(var t) = elem.payload,
+                       let initial = groupResizeInitialText[el.id], initial.fontSize > 0 {
+                        if fontScale != 1.0 {
+                            let newFont = min(400, max(6, initial.fontSize * fontScale))
+                            let fontRatio = newFont / initial.fontSize
+                            t.fontSize = newFont
+                            t.lineSpacing = initial.lineSpacing * fontRatio
+                            t.letterSpacing = initial.letterSpacing * fontRatio
+                            elem.payload = .text(t)
+                        }
+                        // Never clip: grow the box if the reflowed text needs more.
+                        let fitted = TextMeasurement.fittedHeight(for: t, width: elem.width)
+                        elem.height = max(elem.height, fitted)
+                    }
+                }
+            }
+        }
+        if !isLiveTransforming {
+            isLiveTransforming = true
+        }
+    }
+
+    public func endGroupResize() {
+        syncConnectors(touching: selectedElementIds)
+        groupResizeInitialBounds = nil
+        groupResizeInitialFrames = [:]
+        groupResizeInitialText = [:]
+        commitLiveTransform()
+    }
+
+    // MARK: - Group Rotation (members orbit the collective center)
+
+    public var isRotatingGroup: Bool = false
+    public var groupRotationCenter: CGPoint = .zero
+    public var groupRotationStartAngle: Double = 0
+    public var groupRotationAppliedDelta: Double = 0
+    public var groupRotationInitial: [UUID: (center: CGPoint, rotation: Double)] = [:]
+
+    public func beginGroupRotation(startLocation: CGPoint) {
+        let members = selectedElements.filter { !$0.isLocked }
+        guard !members.isEmpty else { return }
+        saveHistoryState()
+        isRotatingGroup = true
+        isLiveTransforming = true
+        groupRotationInitial = [:]
+        var union = CGRect.null
+        for el in members {
+            groupRotationInitial[el.id] = (el.center, el.rotation)
+            union = union.union(el.rotatedCanvasBounds)
+        }
+        groupRotationCenter = CGPoint(x: union.midX, y: union.midY)
+        groupRotationStartAngle = atan2(
+            Double(startLocation.y - union.midY),
+            Double(startLocation.x - union.midX)
+        )
+        groupRotationAppliedDelta = 0
+    }
+
+    public func updateGroupRotation(currentLocation: CGPoint) {
+        guard isRotatingGroup else { return }
+        let currentAngle = atan2(
+            Double(currentLocation.y - groupRotationCenter.y),
+            Double(currentLocation.x - groupRotationCenter.x)
+        )
+        var deltaDeg = (currentAngle - groupRotationStartAngle) * 180.0 / .pi
+        // Snap the delta to 15° increments like the single-element rotator.
+        let snapAngles: [Double] = stride(from: -180.0, through: 180.0, by: 15.0).map { $0 }
+        for snap in snapAngles where abs(deltaDeg - snap) < 4.0 {
+            deltaDeg = snap
+            break
+        }
+        groupRotationAppliedDelta = deltaDeg
+        let deltaRad = deltaDeg * .pi / 180.0
+        let c = cos(deltaRad)
+        let s = sin(deltaRad)
+
+        batchLiveWrites {
+            for el in selectedElements {
+                guard let initial = groupRotationInitial[el.id],
+                      let index = currentPage.elements.firstIndex(where: { $0.id == el.id }),
+                      !currentPage.elements[index].isLocked else { continue }
+                let dx = Double(initial.center.x - groupRotationCenter.x)
+                let dy = Double(initial.center.y - groupRotationCenter.y)
+                let newCenterX = groupRotationCenter.x + dx * c - dy * s
+                let newCenterY = groupRotationCenter.y + dx * s + dy * c
+                var newRotation = (initial.rotation + deltaDeg).truncatingRemainder(dividingBy: 360.0)
+                if newRotation < 0 { newRotation += 360.0 }
+                writeElementLive(index: index) { elem in
+                    elem.x = newCenterX - elem.width / 2.0
+                    elem.y = newCenterY - elem.height / 2.0
+                    elem.rotation = newRotation
+                }
+            }
+        }
+    }
+
+    public func endGroupRotation() {
+        isRotatingGroup = false
+        groupRotationInitial = [:]
+        groupRotationAppliedDelta = 0
+        syncConnectors(touching: selectedElementIds)
+        commitLiveTransform()
     }
 
     // MARK: - Rotation Engine (Canva/Figma Polar Angular Tracking)
@@ -835,6 +1455,7 @@ public final class CanvasDocumentViewModel: ObservableObject {
               !currentPage.elements[index].isLocked else { return }
         saveHistoryState()
         isRotatingElement = true
+        isLiveTransforming = true
         activeRotationElementId = id
         let elem = currentPage.elements[index]
         activeRotationInitialDegrees = elem.rotation
@@ -860,7 +1481,8 @@ public final class CanvasDocumentViewModel: ObservableObject {
                 break
             }
         }
-        currentPage.elements[index].rotation = degrees
+        let finalDegrees = degrees
+        writeElementLive(index: index) { $0.rotation = finalDegrees }
     }
 
     public func endRotation() {
@@ -870,48 +1492,67 @@ public final class CanvasDocumentViewModel: ObservableObject {
             syncConnectors(touching: [id])
             activeRotationElementId = nil
         }
+        commitLiveTransform()
     }
 
     // MARK: - Layer Reordering
 
     public func bringToFront() {
-        guard !selectedElementIds.isEmpty else { return }
-        saveHistoryState()
-        let maxZ = (currentPage.elements.map { $0.zIndex }.max() ?? 0) + 1
-        for id in selectedElementIds {
-            if let index = currentPage.elements.firstIndex(where: { $0.id == id }) {
-                currentPage.elements[index].zIndex = maxZ
-            }
+        reorderSelection { ordered, sel in
+            ordered.filter { !sel.contains($0.id) } + ordered.filter { sel.contains($0.id) }
         }
-        reindexZIndices()
     }
 
     public func sendToBack() {
-        guard !selectedElementIds.isEmpty else { return }
-        saveHistoryState()
-        let minZ = (currentPage.elements.map { $0.zIndex }.min() ?? 0) - 1
-        for id in selectedElementIds {
-            if let index = currentPage.elements.firstIndex(where: { $0.id == id }) {
-                currentPage.elements[index].zIndex = minZ
-            }
+        reorderSelection { ordered, sel in
+            ordered.filter { sel.contains($0.id) } + ordered.filter { !sel.contains($0.id) }
         }
-        reindexZIndices()
     }
 
+    /// Moves each selected element one slot up past the next unselected
+    /// element. Walking top→down keeps a multi-selection's internal order (the
+    /// old "+2 then sort" interleaved selected runs with their neighbours).
     public func bringForward() {
-        guard let firstId = selectedElementIds.first,
-              let index = currentPage.elements.firstIndex(where: { $0.id == firstId }) else { return }
-        saveHistoryState()
-        currentPage.elements[index].zIndex += 2
-        reindexZIndices()
+        reorderSelection { ordered, sel in
+            var arr = ordered
+            var i = arr.count - 2
+            while i >= 0 {
+                if sel.contains(arr[i].id) && !sel.contains(arr[i + 1].id) {
+                    arr.swapAt(i, i + 1)
+                }
+                i -= 1
+            }
+            return arr
+        }
     }
 
     public func sendBackward() {
-        guard let firstId = selectedElementIds.first,
-              let index = currentPage.elements.firstIndex(where: { $0.id == firstId }) else { return }
+        reorderSelection { ordered, sel in
+            var arr = ordered
+            var i = 1
+            while i < arr.count {
+                if sel.contains(arr[i].id) && !sel.contains(arr[i - 1].id) {
+                    arr.swapAt(i, i - 1)
+                }
+                i += 1
+            }
+            return arr
+        }
+    }
+
+    /// Applies a z-order permutation on a local copy and writes the page once.
+    private func reorderSelection(_ transform: ([CanvasElement], Set<UUID>) -> [CanvasElement]) {
+        guard !selectedElementIds.isEmpty else { return }
+        var page = currentPage
+        let ordered = page.elements.enumerated()
+            .sorted { ($0.element.zIndex, $0.offset) < ($1.element.zIndex, $1.offset) }
+            .map(\.element)
+        let result = transform(ordered, selectedElementIds)
+        guard result.map(\.id) != ordered.map(\.id) else { return }
         saveHistoryState()
-        currentPage.elements[index].zIndex -= 2
-        reindexZIndices()
+        page.elements = result
+        for i in page.elements.indices { page.elements[i].zIndex = i }
+        currentPage = page
     }
 
     private func reindexZIndices() {
@@ -923,90 +1564,77 @@ public final class CanvasDocumentViewModel: ObservableObject {
 
     // MARK: - Alignments
 
+    /// Alignment works on "units": each group moves as one rigid block and each
+    /// ungrouped element on its own. Locked elements never move. A single unit
+    /// aligns to the page; several align to their collective bounds.
     public func alignSelected(_ alignment: AlignmentType) {
-        guard !selectedElementIds.isEmpty else { return }
-        saveHistoryState()
+        let movable = selectedElements.filter { !$0.isLocked }
+        guard !movable.isEmpty else { return }
 
+        struct Unit { var ids: [UUID]; var rect: CGRect }
+        var units: [Unit] = []
+        var groupIndex: [UUID: Int] = [:]
+        for el in movable {
+            let r = CGRect(x: el.x, y: el.y, width: el.width, height: el.height)
+            if let gid = el.groupId, let i = groupIndex[gid] {
+                units[i].ids.append(el.id)
+                units[i].rect = units[i].rect.union(r)
+            } else {
+                if let gid = el.groupId { groupIndex[gid] = units.count }
+                units.append(Unit(ids: [el.id], rect: r))
+            }
+        }
+
+        let isDistribute = alignment == .distributeHorizontally || alignment == .distributeVertically
+        if isDistribute && units.count < 3 { return }
+
+        let target: CGRect = units.count == 1
+            ? CGRect(x: 0, y: 0, width: currentPage.width, height: currentPage.height)
+            : units.dropFirst().reduce(units[0].rect) { $0.union($1.rect) }
+
+        var deltas: [(ids: [UUID], dx: Double, dy: Double)] = []
         switch alignment {
-        case .left:
-            if selectedElementIds.count == 1 {
-                updateSelectedElement { $0.x = 0 }
-            } else {
-                let minX = selectedElements.map { $0.x }.min() ?? 0
-                for id in selectedElementIds { updateElement(id: id) { $0.x = minX } }
-            }
-        case .centerHorizontal:
-            if selectedElementIds.count == 1 {
-                updateSelectedElement { $0.x = (currentPage.width - $0.width) / 2.0 }
-            } else {
-                let minX = selectedElements.map { $0.x }.min() ?? 0
-                let maxX = selectedElements.map { $0.x + $0.width }.max() ?? 0
-                let midX = (minX + maxX) / 2.0
-                for id in selectedElementIds { updateElement(id: id) { $0.x = midX - $0.width / 2.0 } }
-            }
-        case .right:
-            if selectedElementIds.count == 1 {
-                updateSelectedElement { $0.x = currentPage.width - $0.width }
-            } else {
-                let maxX = selectedElements.map { $0.x + $0.width }.max() ?? 0
-                for id in selectedElementIds { updateElement(id: id) { $0.x = maxX - $0.width } }
-            }
-        case .top:
-            if selectedElementIds.count == 1 {
-                updateSelectedElement { $0.y = 0 }
-            } else {
-                let minY = selectedElements.map { $0.y }.min() ?? 0
-                for id in selectedElementIds { updateElement(id: id) { $0.y = minY } }
-            }
-        case .centerVertical:
-            if selectedElementIds.count == 1 {
-                updateSelectedElement { $0.y = (currentPage.height - $0.height) / 2.0 }
-            } else {
-                let minY = selectedElements.map { $0.y }.min() ?? 0
-                let maxY = selectedElements.map { $0.y + $0.height }.max() ?? 0
-                let midY = (minY + maxY) / 2.0
-                for id in selectedElementIds { updateElement(id: id) { $0.y = midY - $0.height / 2.0 } }
-            }
-        case .bottom:
-            if selectedElementIds.count == 1 {
-                updateSelectedElement { $0.y = currentPage.height - $0.height }
-            } else {
-                let maxY = selectedElements.map { $0.y + $0.height }.max() ?? 0
-                for id in selectedElementIds { updateElement(id: id) { $0.y = maxY - $0.height } }
-            }
+        case .left:             deltas = units.map { ($0.ids, target.minX - $0.rect.minX, 0) }
+        case .centerHorizontal: deltas = units.map { ($0.ids, target.midX - $0.rect.midX, 0) }
+        case .right:            deltas = units.map { ($0.ids, target.maxX - $0.rect.maxX, 0) }
+        case .top:              deltas = units.map { ($0.ids, 0, target.minY - $0.rect.minY) }
+        case .centerVertical:   deltas = units.map { ($0.ids, 0, target.midY - $0.rect.midY) }
+        case .bottom:           deltas = units.map { ($0.ids, 0, target.maxY - $0.rect.maxY) }
         case .distributeHorizontally:
-            guard selectedElementIds.count >= 3 else { return }
-            let sorted = selectedElements.sorted(by: { $0.x < $1.x })
-            guard let first = sorted.first, let last = sorted.last else { return }
-            let minX = first.x
-            let maxX = last.x + last.width
-            let totalElementWidths = sorted.reduce(0.0) { $0 + $1.width }
-            let totalAvailableSpace = maxX - minX - totalElementWidths
-            let gap = max(0, totalAvailableSpace / Double(sorted.count - 1))
-
-            var currentX = minX
-            for elem in sorted {
-                updateElement(id: elem.id) { $0.x = currentX }
-                currentX += elem.width + gap
+            let sorted = units.sorted { $0.rect.minX < $1.rect.minX }
+            let total = sorted.reduce(0.0) { $0 + $1.rect.width }
+            let gap = max(0, (target.width - total) / Double(sorted.count - 1))
+            var cursor = target.minX
+            for u in sorted {
+                deltas.append((u.ids, cursor - u.rect.minX, 0))
+                cursor += u.rect.width + gap
             }
-            showTemporaryToast("Distributed Horizontally")
-
         case .distributeVertically:
-            guard selectedElementIds.count >= 3 else { return }
-            let sorted = selectedElements.sorted(by: { $0.y < $1.y })
-            guard let first = sorted.first, let last = sorted.last else { return }
-            let minY = first.y
-            let maxY = last.y + last.height
-            let totalElementHeights = sorted.reduce(0.0) { $0 + $1.height }
-            let totalAvailableSpace = maxY - minY - totalElementHeights
-            let gap = max(0, totalAvailableSpace / Double(sorted.count - 1))
-
-            var currentY = minY
-            for elem in sorted {
-                updateElement(id: elem.id) { $0.y = currentY }
-                currentY += elem.height + gap
+            let sorted = units.sorted { $0.rect.minY < $1.rect.minY }
+            let total = sorted.reduce(0.0) { $0 + $1.rect.height }
+            let gap = max(0, (target.height - total) / Double(sorted.count - 1))
+            var cursor = target.minY
+            for u in sorted {
+                deltas.append((u.ids, 0, cursor - u.rect.minY))
+                cursor += u.rect.height + gap
             }
-            showTemporaryToast("Distributed Vertically")
+        }
+
+        guard deltas.contains(where: { abs($0.dx) > 0.01 || abs($0.dy) > 0.01 }) else { return }
+        saveHistoryState()
+        var page = currentPage
+        for d in deltas {
+            for id in d.ids {
+                if let i = page.elements.firstIndex(where: { $0.id == id }) {
+                    page.elements[i].x += d.dx
+                    page.elements[i].y += d.dy
+                }
+            }
+        }
+        currentPage = page
+        syncConnectors(touching: Set(movable.map(\.id)))
+        if isDistribute {
+            showTemporaryToast(alignment == .distributeHorizontally ? "Distributed horizontally" : "Distributed vertically")
         }
     }
 
@@ -1016,22 +1644,39 @@ public final class CanvasDocumentViewModel: ObservableObject {
         guard !selectedElementIds.isEmpty else { return }
         saveHistoryState()
 
+        // Group integrity: duplicating EVERY member of a group must mint a fresh
+        // groupId for the copies — otherwise the copies share the source group
+        // and selecting a duplicate also selects the originals. Partial
+        // duplication keeps the old groupId (copies join the existing group).
+        var groupRemap: [UUID: UUID] = [:]
+        let membersByGroup = Dictionary(grouping: currentPage.elements.filter { $0.groupId != nil }, by: { $0.groupId! })
+        for (gid, members) in membersByGroup where members.allSatisfy({ selectedElementIds.contains($0.id) }) {
+            groupRemap[gid] = UUID()
+        }
+
         var newSelectedIds: Set<UUID> = []
         var idRemap: [UUID: UUID] = [:]
-        for id in selectedElementIds {
-            if let elem = currentPage.elements.first(where: { $0.id == id }) {
-                var copy = elem
-                let newID = UUID()
-                idRemap[id] = newID
-                copy.id = newID
-                copy.name = "\(elem.name) Copy"
-                copy.x += 20
-                copy.y += 20
-                copy.zIndex = (currentPage.elements.map { $0.zIndex }.max() ?? 0) + 1
-                currentPage.elements.append(copy)
-                newSelectedIds.insert(newID)
-            }
+        // Page z-order, not Set order — iterating the Set stacked a preset's
+        // background on top of its content at random.
+        let sources = selectedElements.sorted { $0.zIndex < $1.zIndex }
+        var nextZ = (currentPage.elements.map { $0.zIndex }.max() ?? 0) + 1
+        var page = currentPage
+        for elem in sources {
+            var copy = elem
+            let newID = UUID()
+            idRemap[elem.id] = newID
+            copy.id = newID
+            copy.name = "\(elem.name) Copy"
+            copy.x += 20
+            copy.y += 20
+            copy.zIndex = nextZ
+            nextZ += 1
+            copy.isLocked = false
+            copy.groupId = elem.groupId.map { groupRemap[$0] ?? $0 }
+            page.elements.append(copy)
+            newSelectedIds.insert(newID)
         }
+        currentPage = page
         // Remap anchored connectors whose endpoints were duplicated together;
         // connectors with missing endpoints become static arrows.
         for id in newSelectedIds {
@@ -1048,11 +1693,18 @@ public final class CanvasDocumentViewModel: ObservableObject {
         showTemporaryToast("Duplicated")
     }
 
+    /// System pasteboard generation at our last copy — if another app copied
+    /// since, ⌘V pastes that instead of our stale internal clipboard.
+    private var clipboardChangeCount: Int = -1
+    private var pasteGeneration: Int = 0
+
     public func copySelected() {
-        clipboardElements = selectedElements
-        if let primary = primarySelectedElement {
-            let pb = NSPasteboard.general
-            pb.clearContents()
+        guard !selectedElementIds.isEmpty else { return }
+        clipboardElements = selectedElements.sorted { $0.zIndex < $1.zIndex }
+        pasteGeneration = 0
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        if clipboardElements.count == 1, let primary = clipboardElements.first {
             switch primary.payload {
             case .text(let t):
                 pb.setString(t.text, forType: .string)
@@ -1062,21 +1714,51 @@ public final class CanvasDocumentViewModel: ObservableObject {
                 break
             }
         }
-        showTemporaryToast("Copied (⌘C)")
+        clipboardChangeCount = pb.changeCount
+        showTemporaryToast(clipboardElements.count == 1 ? "Copied" : "Copied \(clipboardElements.count) elements")
     }
 
     public func paste() {
-        if !clipboardElements.isEmpty {
+        if !clipboardElements.isEmpty && NSPasteboard.general.changeCount == clipboardChangeCount {
             saveHistoryState()
+            // Each successive paste steps further so copies don't pile up.
+            pasteGeneration += 1
+            let offset = 30.0 * Double(pasteGeneration)
+            // Fresh groupIds per paste — pasted elements must form their own
+            // group, not silently join the group they were copied from.
+            var groupRemap: [UUID: UUID] = [:]
+            for elem in clipboardElements {
+                if let gid = elem.groupId, groupRemap[gid] == nil {
+                    groupRemap[gid] = UUID()
+                }
+            }
             var newSelectedIds: Set<UUID> = []
+            var idRemap: [UUID: UUID] = [:]
             for elem in clipboardElements {
                 var copy = elem
-                copy.id = UUID()
-                copy.x += 30
-                copy.y += 30
+                let newID = UUID()
+                idRemap[elem.id] = newID
+                copy.id = newID
+                copy.x += offset
+                copy.y += offset
                 copy.zIndex = (currentPage.elements.map { $0.zIndex }.max() ?? 0) + 1
+                copy.groupId = elem.groupId.map { groupRemap[$0] ?? $0 }
                 currentPage.elements.append(copy)
                 newSelectedIds.insert(copy.id)
+            }
+            // Anchored connectors must point at the pasted copies, not the
+            // originals — otherwise the pasted connector snaps back to the
+            // source elements on the next syncConnectors. Same rule as
+            // duplicateSelected: missing endpoints → static arrow.
+            for id in newSelectedIds {
+                if let idx = currentPage.elements.firstIndex(where: { $0.id == id }),
+                   let conn = currentPage.elements[idx].connector {
+                    if let newFrom = idRemap[conn.fromID], let newTo = idRemap[conn.toID] {
+                        currentPage.elements[idx].connector = ConnectorInfo(fromID: newFrom, toID: newTo)
+                    } else {
+                        currentPage.elements[idx].connector = nil
+                    }
+                }
             }
             selectedElementIds = newSelectedIds
             showTemporaryToast("Pasted (⌘V)")
@@ -1106,40 +1788,57 @@ public final class CanvasDocumentViewModel: ObservableObject {
 
     public func deleteSelected() {
         guard !selectedElementIds.isEmpty else { return }
+        guard selectedElements.contains(where: { !$0.isLocked }) else {
+            showTemporaryToast("Locked elements can't be deleted — unlock first (⌘L)")
+            return
+        }
         saveHistoryState()
         let deletedIds = selectedElementIds
         currentPage.elements.removeAll { selectedElementIds.contains($0.id) && !$0.isLocked }
-        // Anchored connectors pointing at deleted elements are removed too.
+        // Anchored connectors are removed only when their endpoint was
+        // ACTUALLY deleted — locked survivors keep their connectors.
+        let survivingIds = Set(currentPage.elements.map { $0.id })
+        let removedIds = deletedIds.subtracting(survivingIds)
         currentPage.elements.removeAll { el in
             guard let conn = el.connector else { return false }
-            return deletedIds.contains(conn.fromID) || deletedIds.contains(conn.toID)
+            return removedIds.contains(conn.fromID) || removedIds.contains(conn.toID)
         }
         selectedElementIds.removeAll()
         editingTextElementId = nil
+        editingCodeElementId = nil
         showTemporaryToast("Deleted")
     }
 
     public func toggleLockSelected() {
         guard let firstId = selectedElementIds.first,
-              let index = currentPage.elements.firstIndex(where: { $0.id == firstId }) else { return }
+              let firstIndex = currentPage.elements.firstIndex(where: { $0.id == firstId }) else { return }
         saveHistoryState()
-        currentPage.elements[index].isLocked.toggle()
-        showTemporaryToast(currentPage.elements[index].isLocked ? "🔒 Locked" : "🔓 Unlocked")
+        // Apply one state to the WHOLE selection — the old code only toggled the
+        // first element, silently leaving the rest unlocked.
+        let newState = !currentPage.elements[firstIndex].isLocked
+        var page = currentPage
+        for idx in page.elements.indices where selectedElementIds.contains(page.elements[idx].id) {
+            page.elements[idx].isLocked = newState
+        }
+        currentPage = page
+        // Locked elements are click-through on the canvas, so say where to undo it.
+        showTemporaryToast(newState ? "Locked — unlock from Layers or with ⌘L" : "Unlocked")
     }
 
     public func flipSelected(horizontal: Bool) {
         guard !selectedElementIds.isEmpty else { return }
         saveHistoryState()
-        for id in selectedElementIds {
-            if let idx = currentPage.elements.firstIndex(where: { $0.id == id }) {
-                if horizontal {
-                    currentPage.elements[idx].flipH = !(currentPage.elements[idx].isFlippedH)
-                } else {
-                    currentPage.elements[idx].flipV = !(currentPage.elements[idx].isFlippedV)
-                }
+        var page = currentPage
+        for idx in page.elements.indices
+        where selectedElementIds.contains(page.elements[idx].id) && !page.elements[idx].isLocked {
+            if horizontal {
+                page.elements[idx].flipH = !(page.elements[idx].isFlippedH)
+            } else {
+                page.elements[idx].flipV = !(page.elements[idx].isFlippedV)
             }
         }
-        showTemporaryToast(horizontal ? "↔️ Flipped Horizontally" : "↕️ Flipped Vertically")
+        currentPage = page
+        showTemporaryToast(horizontal ? "Flipped horizontally" : "Flipped vertically")
     }
 
     // MARK: - Arrow-Key Nudging
@@ -1155,12 +1854,13 @@ public final class CanvasDocumentViewModel: ObservableObject {
             saveHistoryState()
         }
         lastNudgeTime = now
-        for id in selectedElementIds {
-            if let idx = currentPage.elements.firstIndex(where: { $0.id == id }) {
-                currentPage.elements[idx].x += dx
-                currentPage.elements[idx].y += dy
-            }
+        var page = currentPage
+        for idx in page.elements.indices
+        where selectedElementIds.contains(page.elements[idx].id) && !page.elements[idx].isLocked {
+            page.elements[idx].x += dx
+            page.elements[idx].y += dy
         }
+        currentPage = page
         syncConnectors(touching: selectedElementIds)
     }
 
@@ -1211,13 +1911,19 @@ public final class CanvasDocumentViewModel: ObservableObject {
     /// Recomputes every anchored connector that references one of the moved element IDs.
     public func syncConnectors(touching movedIds: Set<UUID>) {
         guard !movedIds.isEmpty else { return }
-        for index in currentPage.elements.indices {
-            guard let conn = currentPage.elements[index].connector else { continue }
-            guard movedIds.contains(conn.fromID) || movedIds.contains(conn.toID) || movedIds.contains(currentPage.elements[index].id) else { continue }
-            guard let fromEl = currentPage.elements.first(where: { $0.id == conn.fromID }),
-                  let toEl = currentPage.elements.first(where: { $0.id == conn.toID }) else { continue }
-            applyConnectorGeometry(&currentPage.elements[index], from: fromEl.frame, to: toEl.frame)
+        var page = currentPage
+        var changed = false
+        for index in page.elements.indices {
+            guard let conn = page.elements[index].connector else { continue }
+            guard movedIds.contains(conn.fromID) || movedIds.contains(conn.toID) || movedIds.contains(page.elements[index].id) else { continue }
+            guard let fromEl = page.elements.first(where: { $0.id == conn.fromID }),
+                  let toEl = page.elements.first(where: { $0.id == conn.toID }) else { continue }
+            applyConnectorGeometry(&page.elements[index], from: fromEl.frame, to: toEl.frame)
+            changed = true
         }
+        // One write (publish + autosave) instead of one per connector — and none
+        // when no connector touches the moved elements.
+        if changed { currentPage = page }
     }
 
     /// Positions a horizontal arrow shape along the boundary-to-boundary segment
@@ -1293,6 +1999,34 @@ public final class CanvasDocumentViewModel: ObservableObject {
         showTemporaryToast("Resized to \(preset.name)")
     }
 
+    /// Resizes the current page from typed values (inspector W/H). Clamped to a
+    /// sane minimum and recorded as one undo step per field edit.
+    public func setCurrentPageSize(width: Double? = nil, height: Double? = nil) {
+        let w = max(16, min(20000, width ?? currentPage.width))
+        let h = max(16, min(20000, height ?? currentPage.height))
+        guard w != currentPage.width || h != currentPage.height else { return }
+        saveHistoryState()
+        currentPage.width = w
+        currentPage.height = h
+    }
+
+    /// Canonical "load a whole project" path (dashboard open, document import).
+    /// Resets page-scoped state AND the view: layout mode + pan/zoom must
+    /// follow the new project — importing a 16:9 deck while in
+    /// .infiniteWhiteboard otherwise keeps the board's gestures, a hidden
+    /// filmstrip, and a stale pan offset. Same convention as applyTemplate.
+    public func adoptProject(_ newProject: CanvasProject) {
+        if isLiveTransforming { isLiveTransforming = false }
+        project = newProject
+        activePageIndex = 0
+        selectedElementIds.removeAll()
+        editingTextElementId = nil
+        editingCodeElementId = nil
+        syncLayoutMode()
+        panOffset = .zero
+        zoomScale = pageLayoutMode == .infiniteWhiteboard ? 0.5 : 0.65
+    }
+
     public func applyTemplate(_ template: CanvasTemplate) {
         saveHistoryState()
         project.name = template.title
@@ -1307,8 +2041,33 @@ public final class CanvasDocumentViewModel: ObservableObject {
         syncLayoutMode()
         selectedElementIds.removeAll()
         editingTextElementId = nil
+        editingCodeElementId = nil
         panOffset = .zero
-        showTemporaryToast("Loaded: \(template.title) (\(project.pages.count) Pages)")
+        persistProject()
+        showTemporaryToast("Applied \(template.title) — ⌘Z to undo")
+    }
+
+    /// Appends a template's pages after the current page instead of replacing
+    /// the design (sidebar "Add as new pages").
+    public func appendTemplatePages(_ template: CanvasTemplate) {
+        let source = template.pages.isEmpty ? [template.page] : template.pages
+        guard !source.isEmpty else { return }
+        saveHistoryState()
+        let fresh = source.map { page -> CanvasPage in
+            var p = page
+            p.id = UUID()
+            return p
+        }
+        let insertAt = min(activePageIndex + 1, project.pages.count)
+        project.pages.insert(contentsOf: fresh, at: insertAt)
+        activePageIndex = insertAt
+        persistProject()
+        showTemporaryToast("Added \(fresh.count) page\(fresh.count == 1 ? "" : "s") from \(template.title)")
+    }
+
+    /// True when the open design has anything worth protecting from a replace.
+    public var hasDesignContent: Bool {
+        project.pages.contains { !$0.elements.isEmpty }
     }
 
     public func addPage() {
@@ -1323,6 +2082,8 @@ public final class CanvasDocumentViewModel: ObservableObject {
         activePageIndex = project.pages.count - 1
         selectedElementIds.removeAll()
         editingTextElementId = nil
+        editingCodeElementId = nil
+        persistProject()
         showTemporaryToast("Added Page \(project.pages.count)")
     }
 
@@ -1332,14 +2093,31 @@ public final class CanvasDocumentViewModel: ObservableObject {
         var newPage = project.pages[index]
         newPage.id = UUID()
         newPage.name = "\(newPage.name) Copy"
+        // Fresh ids for elements AND groups, then point connectors at the copies —
+        // otherwise arrows on the duplicate keep following the original page.
+        var idRemap: [UUID: UUID] = [:]
+        var groupRemap: [UUID: UUID] = [:]
+        for el in newPage.elements {
+            idRemap[el.id] = UUID()
+            if let gid = el.groupId, groupRemap[gid] == nil { groupRemap[gid] = UUID() }
+        }
         newPage.elements = newPage.elements.map { el in
             var copy = el
-            copy.id = UUID()
+            copy.id = idRemap[el.id] ?? UUID()
+            copy.groupId = el.groupId.flatMap { groupRemap[$0] }
+            if let conn = el.connector {
+                if let f = idRemap[conn.fromID], let t = idRemap[conn.toID] {
+                    copy.connector = ConnectorInfo(fromID: f, toID: t)
+                } else {
+                    copy.connector = nil
+                }
+            }
             return copy
         }
         project.pages.insert(newPage, at: index + 1)
         activePageIndex = index + 1
         selectedElementIds.removeAll()
+        persistProject()
         showTemporaryToast("Duplicated Page \(index + 1)")
     }
 
@@ -1355,9 +2133,12 @@ public final class CanvasDocumentViewModel: ObservableObject {
         guard index >= 0 && index < project.pages.count else { return }
         saveHistoryState()
         project.pages.remove(at: index)
+        // Keep the same page active when an earlier page is removed.
+        if index < activePageIndex { activePageIndex -= 1 }
         activePageIndex = min(activePageIndex, project.pages.count - 1)
         selectedElementIds.removeAll()
         editingTextElementId = nil
+        persistProject()
         showTemporaryToast("Deleted Page \(index + 1)")
     }
 
@@ -1378,13 +2159,16 @@ public final class CanvasDocumentViewModel: ObservableObject {
         guard source != destination,
               source >= 0, source < project.pages.count,
               destination >= 0, destination < project.pages.count else { return }
+        saveHistoryState()
+        let activeId = currentPage.id
         let page = project.pages.remove(at: source)
         project.pages.insert(page, at: destination)
-        if activePageIndex == source {
-            activePageIndex = destination
+        // Follow the active page wherever it ended up (it can shift even when
+        // it wasn't the page being moved).
+        if let idx = project.pages.firstIndex(where: { $0.id == activeId }) {
+            activePageIndex = idx
         }
-        project.modifiedAt = Date()
-        ProjectStorage.shared.saveProjectDebounced(project)
+        persistProject()
         showTemporaryToast("Page moved")
     }
 
@@ -1393,8 +2177,7 @@ public final class CanvasDocumentViewModel: ObservableObject {
     public func renamePage(at index: Int, to newName: String) {
         guard index < project.pages.count else { return }
         project.pages[index].name = newName
-        project.modifiedAt = Date()
-        ProjectStorage.shared.saveProjectDebounced(project)
+        persistProject()
     }
 
     public func scrollToPage(index: Int) {
@@ -1475,6 +2258,19 @@ public final class CanvasDocumentViewModel: ObservableObject {
             CGPoint(x: lastViewportSize.width / 2.0, y: lastViewportSize.height / 2.0),
             viewportSize: lastViewportSize
         )
+    }
+
+    /// Single-element insert used by sidebar presets: centered where the user is
+    /// looking, stacked on top of existing content, one undo step, selected.
+    public func placeNewElement(_ element: CanvasElement) {
+        saveHistoryState()
+        var el = element
+        let origin = insertionOrigin(elementWidth: el.width, elementHeight: el.height)
+        el.x = origin.x
+        el.y = origin.y
+        el.zIndex = (currentPage.elements.map(\.zIndex).max() ?? -1) + 1
+        currentPage.elements.append(el)
+        selectedElementIds = [el.id]
     }
 
     /// Origin for a new element so it appears centered where the user is LOOKING,
@@ -1657,15 +2453,28 @@ public final class CanvasDocumentViewModel: ObservableObject {
 
     // MARK: - Zoom Controls
 
+    /// Zoom presets used by the step buttons and the zoom menu. Stepping walks
+    /// this ladder (multiplicative) instead of ±10 points — a fixed +0.1 step was
+    /// a 66% jump at 15% zoom but a 2.5% nudge at 400%.
+    public static let zoomLadder: [Double] = [0.1, 0.15, 0.25, 0.33, 0.5, 0.67, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0]
+
+    private var zoomBounds: ClosedRange<Double> {
+        pageLayoutMode == .infiniteWhiteboard ? 0.05...8.0 : 0.1...4.0
+    }
+
     public func zoomIn() {
-        let upper = pageLayoutMode == .infiniteWhiteboard ? 8.0 : 4.0
-        zoomScale = min(upper, zoomScale + 0.1)
-        clampPanOffset(for: lastViewportSize)
+        let next = Self.zoomLadder.first(where: { $0 > zoomScale + 0.001 }) ?? zoomBounds.upperBound
+        setZoom(next)
     }
 
     public func zoomOut() {
-        let lower = pageLayoutMode == .infiniteWhiteboard ? 0.05 : 0.1
-        zoomScale = max(lower, zoomScale - 0.1)
+        let prev = Self.zoomLadder.last(where: { $0 < zoomScale - 0.001 }) ?? zoomBounds.lowerBound
+        setZoom(prev)
+    }
+
+    /// Sets an explicit zoom level (clamped to the layout mode's range).
+    public func setZoom(_ scale: Double) {
+        zoomScale = min(zoomBounds.upperBound, max(zoomBounds.lowerBound, scale))
         clampPanOffset(for: lastViewportSize)
     }
 
@@ -1686,7 +2495,14 @@ public final class CanvasDocumentViewModel: ObservableObject {
                 let centerElemY = (minY + maxY) / 2.0
                 let fit = min(viewportSize.width / boundW, viewportSize.height / boundH)
                 zoomScale = max(0.15, min(1.2, fit))
-                panOffset = CGPoint(x: -centerElemX * zoomScale, y: -centerElemY * zoomScale)
+                // Center the bbox at the viewport middle: the page plane is
+                // scaled about its own center, so pan = z·(pageCenter − c).
+                // The old "-c·z" ignored the scale origin and landed half a
+                // page-width off.
+                panOffset = CGPoint(
+                    x: (currentPage.width / 2.0 - centerElemX) * zoomScale,
+                    y: (currentPage.height / 2.0 - centerElemY) * zoomScale
+                )
             } else {
                 zoomScale = 0.8
                 panOffset = .zero
@@ -1730,7 +2546,12 @@ public final class CanvasDocumentViewModel: ObservableObject {
         let fit = min(viewportSize.width / paddedW, viewportSize.height / paddedH)
         let upper = pageLayoutMode == .infiniteWhiteboard ? 8.0 : 4.0
         zoomScale = max(0.1, min(upper, fit))
-        panOffset = CGPoint(x: -bounds.midX * zoomScale, y: -bounds.midY * zoomScale)
+        // pan = z·(pageCenter − selectionCenter) — same center-anchored
+        // convention as zoomToFit; "-mid·z" is off by z·pageCenter.
+        panOffset = CGPoint(
+            x: (currentPage.width / 2.0 - bounds.midX) * zoomScale,
+            y: (currentPage.height / 2.0 - bounds.midY) * zoomScale
+        )
         clampPanOffset(for: viewportSize)
     }
 
@@ -1783,7 +2604,12 @@ public final class CanvasDocumentViewModel: ObservableObject {
 
     @MainActor
     public func showTemporaryToast(_ message: String) {
-        toastMessage = message
+        // Callers historically prefixed messages with an emoji; the toast now
+        // carries its own status icon, so strip the decoration and use it only
+        // to pick the style.
+        let trimmed = message.trimmingCharacters(in: .whitespaces)
+        toastIsError = trimmed.hasPrefix("❌") || trimmed.hasPrefix("⚠️")
+        toastMessage = Self.stripLeadingEmoji(trimmed)
         showToast = true
         toastTask?.cancel()
         toastTask = Task { @MainActor in
@@ -1792,6 +2618,16 @@ public final class CanvasDocumentViewModel: ObservableObject {
                 self.showToast = false
             }
         }
+    }
+
+    private static func stripLeadingEmoji(_ text: String) -> String {
+        var scalars = Substring(text)
+        while let first = scalars.unicodeScalars.first,
+              first.properties.isEmojiPresentation || first.properties.isEmoji && first.value > 0x238C
+                || first.value == 0xFE0F || first.value == 0x200D || first == " " {
+            scalars = scalars.dropFirst()
+        }
+        return String(scalars)
     }
 }
 
@@ -1810,17 +2646,19 @@ public enum AlignmentType {
 }
 
 public enum SidebarTab: String, CaseIterable, Identifiable {
-    case pages = "Pages"
+    // Rail order = declaration order: content-creation tabs first (Canva's
+    // Design → Elements → Text → Uploads flow), document structure next,
+    // developer tooling last. Pen settings live in the toolbar Pen popover.
     case templates = "Templates"
-    case code = "Code"
     case elements = "Shapes"
     case text = "Text"
     case media = "Media"
     case icons = "Icons"
     case brandKit = "Brand"
     case backgrounds = "Background"
-    case draw = "Pen"
+    case pages = "Pages"
     case layers = "Layers"
+    case code = "Code"
 
     public var id: String { rawValue }
 
@@ -1835,8 +2673,7 @@ public enum SidebarTab: String, CaseIterable, Identifiable {
         case .icons: return "sparkles"
         case .brandKit: return "briefcase.fill"
         case .backgrounds: return "paintpalette.fill"
-        case .draw: return "pencil.tip"
-        case .layers: return "square.3.layers.3d.down.right.fill"
+        case .layers: return "square.3.layers.3d"
         }
     }
 }

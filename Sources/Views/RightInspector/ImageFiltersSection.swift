@@ -6,12 +6,7 @@ public struct ImageFiltersSection: View {
     public var body: some View {
         if let element = viewModel.primarySelectedElement,
            case .image(let imageContent) = element.payload {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack {
-                    Text("Image Adjustments")
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundColor(.secondary)
-                    Spacer()
+            InspectorSection("Image", accessory: {
                     Button("Reset") {
                         viewModel.updateSelectedElement { elem in
                             if case .image(var img) = elem.payload {
@@ -21,8 +16,7 @@ public struct ImageFiltersSection: View {
                         }
                     }
                     .font(.system(size: 10))
-                }
-
+            }) {
                 // 1-Click Smart Tools
                 VStack(spacing: 8) {
                     Button(action: {
@@ -30,14 +24,14 @@ public struct ImageFiltersSection: View {
                     }) {
                         HStack(spacing: 6) {
                             Image(systemName: "sparkles")
-                                .foregroundColor(Color(hex: "#D97706"))
-                            Text("Remove Background (Apple Vision)")
-                                .font(.system(size: 11, weight: .bold, design: .serif))
+                                .foregroundColor(PlumaTheme.sectionHeader)
+                            Text("Remove Background")
+                                .font(.system(size: 11, weight: .bold))
                         }
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 7)
-                        .background(Color(hex: "#C2410C").opacity(0.12))
-                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color(hex: "#C2410C").opacity(0.3), lineWidth: 1))
+                        .background(PlumaTheme.accent.opacity(0.12))
+                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(PlumaTheme.accent.opacity(0.3), lineWidth: 1))
                         .clipShape(RoundedRectangle(cornerRadius: 6))
                         .contentShape(Rectangle())
                     }
@@ -51,9 +45,9 @@ public struct ImageFiltersSection: View {
                     }) {
                         HStack(spacing: 6) {
                             Image(systemName: "paintpalette.fill")
-                                .foregroundColor(Color(hex: "#C2410C"))
+                                .foregroundColor(PlumaTheme.accent)
                             Text("Extract Color Palette")
-                                .font(.system(size: 11, weight: .medium, design: .serif))
+                                .font(.system(size: 11, weight: .medium))
                         }
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 6)

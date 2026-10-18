@@ -33,6 +33,7 @@ public enum ShapeKind: String, Codable, CaseIterable {
     case lightning = "Lightning Bolt"
     case crescentMoon = "Crescent Moon"
     case donut = "Ring / Donut"
+    case database = "Database Cylinder"
     case parallelogram = "Parallelogram"
     case trapezoid = "Trapezoid"
     case cloud = "Cloud"
@@ -100,6 +101,16 @@ public enum TextEffectKind: String, Codable, CaseIterable {
     case stampDistressed = "Rubber Stamp"
 }
 
+/// Vertical placement of text inside a box that is taller than its content
+/// (PowerPoint `anchor="ctr"/"b"`, Canva vertical alignment). Tight auto-fit
+/// boxes are unaffected — this only matters when the frame has extra space,
+/// e.g. freshly imported PPTX boxes which keep their original frame.
+public enum TextVerticalAnchor: String, Codable, CaseIterable {
+    case top = "Top"
+    case center = "Center"
+    case bottom = "Bottom"
+}
+
 public struct TextContent: Codable, Equatable, Hashable {
     public var text: String
     public var fontFamily: String
@@ -125,6 +136,16 @@ public struct TextContent: Codable, Equatable, Hashable {
     public var cardBorderWidth: Double
     public var cardCornerRadius: Double
     public var cardPadding: Double
+    /// Internal text margins (PowerPoint lIns/rIns/tIns/bIns). The element frame
+    /// stays the full box so the transformer matches the source; renderers and
+    /// measurement inset the text run inside it. Older `.canv` files predate
+    /// these keys — see `init(from:)` which decodes them leniently so those
+    /// projects still open.
+    public var insetLeft: Double
+    public var insetRight: Double
+    public var insetTop: Double
+    public var insetBottom: Double
+    public var verticalAnchor: TextVerticalAnchor
 
     public init(
         text: String = "THE DAILY DISPATCH",
@@ -150,7 +171,12 @@ public struct TextContent: Codable, Equatable, Hashable {
         cardBorderColor: CodableColor? = nil,
         cardBorderWidth: Double = 0.0,
         cardCornerRadius: Double = 0.0,
-        cardPadding: Double = 0.0
+        cardPadding: Double = 0.0,
+        insetLeft: Double = 0.0,
+        insetRight: Double = 0.0,
+        insetTop: Double = 0.0,
+        insetBottom: Double = 0.0,
+        verticalAnchor: TextVerticalAnchor = .top
     ) {
         self.text = text
         self.fontFamily = fontFamily
@@ -176,6 +202,50 @@ public struct TextContent: Codable, Equatable, Hashable {
         self.cardBorderWidth = cardBorderWidth
         self.cardCornerRadius = cardCornerRadius
         self.cardPadding = cardPadding
+        self.insetLeft = insetLeft
+        self.insetRight = insetRight
+        self.insetTop = insetTop
+        self.insetBottom = insetBottom
+        self.verticalAnchor = verticalAnchor
+    }
+
+    /// Custom decoder: synthesized Codable ignores init defaults and throws
+    /// `keyNotFound` for keys added after a project was saved, which would make
+    /// every `.canv` written by an older build silently unloadable (real files
+    /// predate the card fields, the insets, the anchor…). Only the keys that
+    /// existed in the very first shipped format stay strict so corrupt data
+    /// still fails; everything later falls back to the memberwise defaults.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        text = try c.decode(String.self, forKey: .text)
+        fontFamily = try c.decode(String.self, forKey: .fontFamily)
+        fontSize = try c.decode(Double.self, forKey: .fontSize)
+        fontWeight = try c.decode(Double.self, forKey: .fontWeight)
+        isItalic = try c.decodeIfPresent(Bool.self, forKey: .isItalic) ?? false
+        isUnderlined = try c.decodeIfPresent(Bool.self, forKey: .isUnderlined) ?? false
+        alignment = try c.decodeIfPresent(TextAlignmentKind.self, forKey: .alignment) ?? .center
+        textColor = try c.decodeIfPresent(CodableColor.self, forKey: .textColor) ?? .inkBlack
+        useGradient = try c.decodeIfPresent(Bool.self, forKey: .useGradient) ?? false
+        textGradient = try c.decodeIfPresent(FillStyle.self, forKey: .textGradient) ?? .presetSunset()
+        letterSpacing = try c.decodeIfPresent(Double.self, forKey: .letterSpacing) ?? 1.0
+        lineSpacing = try c.decodeIfPresent(Double.self, forKey: .lineSpacing) ?? 4.0
+        effectKind = try c.decodeIfPresent(TextEffectKind.self, forKey: .effectKind) ?? .none
+        effectColor = try c.decodeIfPresent(CodableColor.self, forKey: .effectColor) ?? CodableColor(hex: "#C2410C")
+        effectWidth = try c.decodeIfPresent(Double.self, forKey: .effectWidth) ?? 2.0
+        outlineColor = try c.decodeIfPresent(CodableColor.self, forKey: .outlineColor) ?? .inkBlack
+        outlineWidth = try c.decodeIfPresent(Double.self, forKey: .outlineWidth) ?? 2.0
+        isCurved = try c.decodeIfPresent(Bool.self, forKey: .isCurved) ?? false
+        curveAngle = try c.decodeIfPresent(Double.self, forKey: .curveAngle) ?? 180.0
+        cardBackground = try c.decodeIfPresent(CodableColor.self, forKey: .cardBackground)
+        cardBorderColor = try c.decodeIfPresent(CodableColor.self, forKey: .cardBorderColor)
+        cardBorderWidth = try c.decodeIfPresent(Double.self, forKey: .cardBorderWidth) ?? 0.0
+        cardCornerRadius = try c.decodeIfPresent(Double.self, forKey: .cardCornerRadius) ?? 0.0
+        cardPadding = try c.decodeIfPresent(Double.self, forKey: .cardPadding) ?? 0.0
+        insetLeft = try c.decodeIfPresent(Double.self, forKey: .insetLeft) ?? 0.0
+        insetRight = try c.decodeIfPresent(Double.self, forKey: .insetRight) ?? 0.0
+        insetTop = try c.decodeIfPresent(Double.self, forKey: .insetTop) ?? 0.0
+        insetBottom = try c.decodeIfPresent(Double.self, forKey: .insetBottom) ?? 0.0
+        verticalAnchor = try c.decodeIfPresent(TextVerticalAnchor.self, forKey: .verticalAnchor) ?? .top
     }
 }
 
@@ -312,7 +382,6 @@ public struct CanvasElement: Identifiable, Codable, Equatable, Hashable {
     public var zIndex: Int
     public var groupId: UUID?
     public var backdropBlur: Double
-    public var borderGlow: CodableColor?
     /// Mirror flips (optional for JSON backward-compatibility with older projects).
     public var flipH: Bool?
     public var flipV: Bool?
@@ -338,7 +407,6 @@ public struct CanvasElement: Identifiable, Codable, Equatable, Hashable {
         zIndex: Int = 0,
         groupId: UUID? = nil,
         backdropBlur: Double = 0.0,
-        borderGlow: CodableColor? = nil,
         flipH: Bool = false,
         flipV: Bool = false,
         connector: ConnectorInfo? = nil
@@ -358,7 +426,6 @@ public struct CanvasElement: Identifiable, Codable, Equatable, Hashable {
         self.zIndex = zIndex
         self.groupId = groupId
         self.backdropBlur = backdropBlur
-        self.borderGlow = borderGlow
         self.flipH = flipH
         self.flipV = flipV
         self.connector = connector
@@ -396,5 +463,30 @@ public struct CanvasElement: Identifiable, Codable, Equatable, Hashable {
             width: bw,
             height: bh
         )
+    }
+
+    /// Custom decoder: `backdropBlur` (and any future non-optional field) was
+    /// added after the first shipped format — synthesized Codable throws
+    /// `keyNotFound` for those `.canv` files. Geometry/identity stays strict.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? "Element"
+        payload = try c.decode(ElementPayload.self, forKey: .payload)
+        x = try c.decode(Double.self, forKey: .x)
+        y = try c.decode(Double.self, forKey: .y)
+        width = try c.decode(Double.self, forKey: .width)
+        height = try c.decode(Double.self, forKey: .height)
+        rotation = try c.decodeIfPresent(Double.self, forKey: .rotation) ?? 0.0
+        opacity = max(0, min(1, try c.decodeIfPresent(Double.self, forKey: .opacity) ?? 1.0))
+        isLocked = try c.decodeIfPresent(Bool.self, forKey: .isLocked) ?? false
+        isVisible = try c.decodeIfPresent(Bool.self, forKey: .isVisible) ?? true
+        shadow = try c.decodeIfPresent(ShadowEffect.self, forKey: .shadow) ?? .none
+        zIndex = try c.decodeIfPresent(Int.self, forKey: .zIndex) ?? 0
+        groupId = try c.decodeIfPresent(UUID.self, forKey: .groupId)
+        backdropBlur = try c.decodeIfPresent(Double.self, forKey: .backdropBlur) ?? 0.0
+        flipH = try c.decodeIfPresent(Bool.self, forKey: .flipH)
+        flipV = try c.decodeIfPresent(Bool.self, forKey: .flipV)
+        connector = try c.decodeIfPresent(ConnectorInfo.self, forKey: .connector)
     }
 }

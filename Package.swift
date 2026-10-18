@@ -15,6 +15,11 @@ let package = Package(
             name: "Pluma",
             dependencies: [],
             path: "Sources"
+        ),
+        .testTarget(
+            name: "PlumaTests",
+            dependencies: ["Pluma"],
+            path: "Tests/PlumaTests"
         )
     ]
 )

@@ -6,12 +6,7 @@ public struct StrokeSection: View {
     public var body: some View {
         if let element = viewModel.primarySelectedElement,
            case .shape(let shape) = element.payload {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack {
-                    Text("INK BORDER & RULE")
-                        .font(.system(size: 10, weight: .bold, design: .serif))
-                        .foregroundColor(Color(hex: "#D97706"))
-                    Spacer()
+            InspectorSection("Border", accessory: {
                     Toggle("", isOn: Binding(
                         get: { shape.stroke.isEnabled },
                         set: { val in
@@ -25,12 +20,12 @@ public struct StrokeSection: View {
                     ))
                     .toggleStyle(.switch)
                     .controlSize(.mini)
-                }
-
+                    .labelsHidden()
+            }) {
                 if shape.stroke.isEnabled {
                     HStack {
-                        Text("Rule Inking")
-                            .font(.system(size: 11, design: .serif))
+                        Text("Color")
+                            .font(.system(size: 11))
                             .foregroundColor(.secondary)
                         Spacer()
                         CanvaColorButton(
@@ -51,8 +46,8 @@ public struct StrokeSection: View {
 
                     HStack {
                         Text("Weight")
-                            .font(.system(size: 11, design: .serif))
-                            .foregroundColor(Color(hex: "#8C827A"))
+                            .font(.system(size: 11))
+                            .foregroundColor(Color.secondary)
                         Slider(value: Binding(
                             get: { shape.stroke.lineWidth },
                             set: { val in
@@ -66,11 +61,11 @@ public struct StrokeSection: View {
                         ), in: 0.5...20, step: 0.5)
                         Text(String(format: "%.1f pt", shape.stroke.lineWidth))
                             .font(.system(size: 10.5, design: .monospaced))
-                            .foregroundColor(Color(hex: "#FAF7F0"))
+                            .foregroundColor(Color.primary)
                             .frame(width: 40)
                     }
 
-                    Picker("Rule Style", selection: Binding(
+                    Picker("Style", selection: Binding(
                         get: { shape.stroke.dashPattern },
                         set: { val in
                             viewModel.updateSelectedElement { elem in

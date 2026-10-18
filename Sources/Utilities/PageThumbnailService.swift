@@ -67,6 +67,11 @@ public final class PageThumbnailService {
                 hasher.combine(t.lineSpacing)
                 hasher.combine(t.letterSpacing)
                 hasher.combine(t.cardBackground)
+                hasher.combine(t.insetLeft)
+                hasher.combine(t.insetRight)
+                hasher.combine(t.insetTop)
+                hasher.combine(t.insetBottom)
+                hasher.combine(t.verticalAnchor)
             case .shape(let s):
                 hasher.combine(3)
                 hasher.combine(s.kind)
@@ -92,11 +97,24 @@ public final class PageThumbnailService {
         return hasher.finalize()
     }
 
+    /// Refresh an entry's LRU timestamp — must run inside a barrier block since
+    /// `cache` writes are only safe there. Called on every hit so eviction
+    /// tracks actual recency, not insertion order.
+    private func touch(_ key: CacheKey) {
+        queue.async(flags: .barrier) { [weak self] in
+            guard let self = self, let e = self.cache[key] else { return }
+            self.cache[key] = CacheEntry(image: e.image, lastAccess: Date())
+        }
+    }
+
     /// Synchronous cached lookup; renders on miss (fast enough for small thumbnails).
+    /// `cache` is ONLY touched through `queue` (reads sync, writes barrier) —
+    /// a plain Dictionary mutated across threads is UB (heap corruption).
     public func thumbnail(for page: CanvasPage, targetWidth: CGFloat = 150) -> NSImage? {
         let pixelWidth = Int(targetWidth * 2) // 2x for retina crispness
         let key = CacheKey(pageID: page.id, fingerprint: Self.fingerprint(of: page), pixelWidth: pixelWidth)
-        if let hit = cache[key] {
+        if let hit = queue.sync(execute: { cache[key] }) {
+            touch(key)
             return hit.image
         }
         let scale = Double(pixelWidth) / max(1, page.width)
@@ -105,18 +123,50 @@ public final class PageThumbnailService {
         // Downsample into a tightly-fitted bitmap for memory efficiency
         let targetH = Int(Double(page.height) * scale)
         if let resized = image.resizedTo(width: pixelWidth, height: targetH) {
-            evictIfNeeded()
-            cache[key] = CacheEntry(image: resized, lastAccess: Date())
+            queue.sync(flags: .barrier) {
+                evictIfNeeded()
+                cache[key] = CacheEntry(image: resized, lastAccess: Date())
+            }
             return resized
         }
         return image
+    }
+
+    /// Cache-only lookup: returns the newest cached thumbnail for this page at
+    /// (approximately) this width, or nil on miss — NEVER renders. Views call
+    /// this during live gestures so a 60Hz resize stream can't trigger a
+    /// synchronous full-page bitmap render on the main thread per tick (the
+    /// old filmstrip path did exactly that, which made text-box resizes lag).
+    public func thumbnailIfCached(for page: CanvasPage, targetWidth: CGFloat = 150) -> NSImage? {
+        let pixelWidth = Int(targetWidth * 2)
+        let key = CacheKey(pageID: page.id, fingerprint: Self.fingerprint(of: page), pixelWidth: pixelWidth)
+        let found: (key: CacheKey, image: NSImage)? = queue.sync {
+            if let hit = cache[key] { return (key, hit.image) }
+            // Fall back to any cached width for the same fingerprint so the
+            // filmstrip keeps showing the pre-gesture frame instead of flashing.
+            for (k, entry) in cache where k.pageID == page.id && k.fingerprint == key.fingerprint {
+                return (k, entry.image)
+            }
+            // Last resort: the most recent cached frame for this page (stale beats blank).
+            if let stale = cache.filter({ $0.key.pageID == page.id })
+                .sorted(by: { $0.value.lastAccess > $1.value.lastAccess }).first {
+                return (stale.key, stale.value.image)
+            }
+            return nil
+        }
+        if let found = found {
+            touch(found.key)
+            return found.image
+        }
+        return nil
     }
 
     /// Async variant that never blocks the main thread longer than a render; delivers on main.
     public func thumbnailAsync(for page: CanvasPage, targetWidth: CGFloat = 150, completion: @escaping (NSImage?) -> Void) {
         let pixelWidth = Int(targetWidth * 2)
         let key = CacheKey(pageID: page.id, fingerprint: Self.fingerprint(of: page), pixelWidth: pixelWidth)
-        if let hit = cache[key] {
+        if let hit = queue.sync(execute: { cache[key] }) {
+            touch(key)
             completion(hit.image)
             return
         }
@@ -148,6 +198,7 @@ public final class PageThumbnailService {
         }
     }
 
+    /// MUST only be called inside a `queue` barrier block.
     private func evictIfNeeded() {
         guard cache.count >= maxEntries else { return }
         let sorted = cache.sorted { $0.value.lastAccess < $1.value.lastAccess }

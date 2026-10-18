@@ -9,7 +9,7 @@ public struct LayersTabView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Text("LAYERS (\(viewModel.currentPage.elements.count))")
-                    .font(.system(size: 12, weight: .bold, design: .serif))
+                    .font(.system(size: 12, weight: .bold))
                     .foregroundColor(.primary)
                     .tracking(0.5)
 
@@ -36,7 +36,7 @@ public struct LayersTabView: View {
                         .font(.system(size: 28))
                         .foregroundColor(.secondary)
                     Text("Clean Sheet")
-                        .font(.system(size: 12, design: .serif))
+                        .font(.system(size: 12))
                         .foregroundColor(.secondary)
                     Spacer()
                 }
@@ -80,10 +80,10 @@ public struct LayersTabView: View {
                     editingLayerId = nil
                 })
                 .textFieldStyle(.plain)
-                .font(.system(size: 11, design: .serif))
+                .font(.system(size: 11))
             } else {
                 Text(element.name)
-                    .font(.system(size: 11, weight: isSelected ? .bold : .regular, design: .serif))
+                    .font(.system(size: 11, weight: isSelected ? .bold : .regular))
                     .foregroundColor(isSelected ? .primary : .secondary)
                     .lineLimit(1)
                     .onTapGesture(count: 2) {
@@ -100,9 +100,10 @@ public struct LayersTabView: View {
                     moveElementUp(id: element.id)
                 }) {
                     Image(systemName: "chevron.up")
-                        .font(.system(size: 8))
+                        .font(.system(size: 9, weight: .semibold))
                         .foregroundColor(.secondary)
-                        .padding(2)
+                        .frame(width: 20, height: 22)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .hoverHighlight()
@@ -112,9 +113,10 @@ public struct LayersTabView: View {
                     moveElementDown(id: element.id)
                 }) {
                     Image(systemName: "chevron.down")
-                        .font(.system(size: 8))
+                        .font(.system(size: 9, weight: .semibold))
                         .foregroundColor(.secondary)
-                        .padding(2)
+                        .frame(width: 20, height: 22)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .hoverHighlight()
@@ -127,8 +129,10 @@ public struct LayersTabView: View {
                 viewModel.updateElement(id: element.id) { $0.isLocked.toggle() }
             }) {
                 Image(systemName: element.isLocked ? "lock.fill" : "lock.open")
-                    .font(.system(size: 10))
-                    .foregroundColor(element.isLocked ? Color(hex: "#D97706") : .secondary.opacity(0.4))
+                    .font(.system(size: 11))
+                    .foregroundColor(element.isLocked ? PlumaTheme.accentWarm : .secondary.opacity(0.5))
+                    .frame(width: 22, height: 22)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
                 .hoverHighlight()
@@ -139,8 +143,10 @@ public struct LayersTabView: View {
                 viewModel.updateElement(id: element.id) { $0.isVisible.toggle() }
             }) {
                 Image(systemName: element.isVisible ? "eye.fill" : "eye.slash")
-                    .font(.system(size: 10))
-                    .foregroundColor(element.isVisible ? .secondary : .red)
+                    .font(.system(size: 11))
+                    .foregroundColor(element.isVisible ? .secondary : PlumaTheme.danger)
+                    .frame(width: 22, height: 22)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
                 .hoverHighlight()

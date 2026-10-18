@@ -139,11 +139,18 @@ public enum TemplateCatalog {
         ResumeTemplates.createHealthcareResumeTemplate(),
         ResumeTemplates.createStudentInternshipResumeTemplate(),
         ResumeTemplates.createSalesManagerResumeTemplate(),
+        StudioTemplates.createZurichCVTemplate(),           // Swiss timeline grid
+        StudioTemplates.createScholarCVTemplate(),          // Academic publications CV
+        StudioTemplates.createStudioCVTemplate(),           // Creative two-column CV
 
         // ==================== 1. PRESENTATION (16:9) FULL 5-SLIDE DECKS ====================
         createCuratorialGalleryTemplate(),          // 5 Slides: Cover -> Topics -> Deep Dive -> Comparison -> Summary
         createArtisanPortfolioDeckTemplate(),       // 5 Slides: Project Cover -> Process Topics -> Challenge & Solution -> System Specs -> Results & Impact
         createProductVisionKeynoteTemplate(),       // 5 Slides: Keynote Hero -> Agenda Pillars -> Speed & ProMotion -> Tactile System -> Next Chapter
+        StudioTemplates.createMeridianKeynoteTemplate(),   // 5 Slides: dark launch keynote
+        StudioTemplates.createGridZurichTemplate(),        // 5 Slides: Swiss International Style
+        StudioTemplates.createFounderPitchTemplate(),      // 5 Slides: Series A investor pitch
+        StudioTemplates.createQuarterlyReviewTemplate(),   // 4 Slides: executive QBR
 
         // ==================== 2. A4 DOCUMENTS (1240 × 1754 - MULTI-PAGE) ====================
         createRetroNewspaperTemplate(),             // 3 Pages
@@ -154,6 +161,8 @@ public enum TemplateCatalog {
         createLetterpressPosterTemplate(),
         createMinimalistResumeTemplate(),
         createNordicInvoiceTemplate(),
+        StudioTemplates.createAnnualReportTemplate(),       // 2 Pages: navy + gold
+        StudioTemplates.createDesignWeekPosterTemplate(),   // Typographic event poster
 
         // ==================== 3. INSTAGRAM / SQUARE (1080 × 1080) ====================
         createPaperCollageTemplate(),
@@ -161,6 +170,7 @@ public enum TemplateCatalog {
         createFlashSaleTemplate(),
         createThoughtLeadershipQuoteTemplate(),
         createNordicEventPassTemplate(),
+        StudioTemplates.createProductDropTemplate(),        // Dark product drop
 
         // ==================== 4. STORIES / VERTICAL (9:16 - 1080 × 1920) ====================
         createScrapbookStoryTemplate(),
@@ -170,10 +180,12 @@ public enum TemplateCatalog {
         // ==================== 5. YOUTUBE THUMBNAILS (16:9 - 1280 × 720) ====================
         createRetroDocThumbnailTemplate(),
         createDesignSecretsThumbnailTemplate(),
+        StudioTemplates.createPodcastThumbTemplate(),       // Waveform episode thumb
 
         // ==================== 6. BUSINESS CARDS (1050 × 600) ====================
         createBusinessCardTemplate(),
-        createStudioDirectorCardTemplate()
+        createStudioDirectorCardTemplate(),
+        StudioTemplates.createHelvetiaCardTemplate()
     ]
 
     // =========================================================================

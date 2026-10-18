@@ -11,7 +11,7 @@ public struct HoverIconButtonStyle: ButtonStyle {
     public var side: CGFloat = 28
     public var cornerRadius: CGFloat = 7
     /// Fill color used when the button represents an active/selected state.
-    public var selectedColor: Color = Color(hex: "#C2410C")
+    public var selectedColor: Color = PlumaTheme.accent
     public var isSelected: Bool = false
     /// Extra opacity applied to the icon when disabled.
     public var disabledOpacity: Double = 0.35
@@ -19,7 +19,7 @@ public struct HoverIconButtonStyle: ButtonStyle {
     public init(
         side: CGFloat = 28,
         cornerRadius: CGFloat = 7,
-        selectedColor: Color = Color(hex: "#C2410C"),
+        selectedColor: Color = PlumaTheme.accent,
         isSelected: Bool = false
     ) {
         self.side = side
@@ -56,7 +56,7 @@ public struct HoverIconButtonStyle: ButtonStyle {
                                 ? selectedColor.opacity(isSelected ? 0.9 : 0.22)
                                 : isSelected
                                     ? selectedColor
-                                    : (hovering ? Color.primary.opacity(0.12) : Color.primary.opacity(0.05))
+                                    : (hovering ? PlumaTheme.controlHover : Color.clear)
                         )
                 )
                 .scaleEffect(configuration.isPressed ? 0.94 : 1.0)
@@ -127,7 +127,7 @@ public struct HoverPillButtonStyle: ButtonStyle {
         }
 
         private var pillFill: Color {
-            let base = tint ?? Color(hex: "#C2410C")
+            let base = tint ?? PlumaTheme.accent
             if configuration.isPressed { return filled ? base.opacity(0.8) : base.opacity(0.22) }
             if filled { return base }
             return hovering ? base.opacity(0.2) : base.opacity(0.12)
@@ -138,10 +138,10 @@ public struct HoverPillButtonStyle: ButtonStyle {
 /// Toolbar tool toggle (Select / Hand / Text / Pen …) with hover ring.
 public struct ToolToggleButtonStyle: ButtonStyle {
     public var cornerRadius: CGFloat = 6
-    public var selectedColor: Color = Color(hex: "#C2410C")
+    public var selectedColor: Color = PlumaTheme.accent
     public var isSelected: Bool
 
-    public init(isSelected: Bool, selectedColor: Color = Color(hex: "#C2410C"), cornerRadius: CGFloat = 6) {
+    public init(isSelected: Bool, selectedColor: Color = PlumaTheme.accent, cornerRadius: CGFloat = 6) {
         self.isSelected = isSelected
         self.selectedColor = selectedColor
         self.cornerRadius = cornerRadius
@@ -190,9 +190,9 @@ public struct ToolToggleButtonStyle: ButtonStyle {
 /// Segmented control segment (layout mode switcher etc.) with hover feedback.
 public struct SegmentedSegmentStyle: ButtonStyle {
     public var isSelected: Bool
-    public var selectedColor: Color = Color(hex: "#C2410C")
+    public var selectedColor: Color = PlumaTheme.accent
 
-    public init(isSelected: Bool, selectedColor: Color = Color(hex: "#C2410C")) {
+    public init(isSelected: Bool, selectedColor: Color = PlumaTheme.accent) {
         self.isSelected = isSelected
         self.selectedColor = selectedColor
     }
@@ -261,7 +261,7 @@ public struct CircleHoverButtonStyle: ButtonStyle {
                         configuration.isPressed
                             ? (danger ? Color.red.opacity(0.3) : Color.primary.opacity(0.2))
                             : isSelected
-                                ? Color(hex: "#C2410C")
+                                ? PlumaTheme.accent
                                 : (hovering ? Color.primary.opacity(0.14) : Color.primary.opacity(0.06))
                     )
                 )

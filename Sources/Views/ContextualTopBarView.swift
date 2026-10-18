@@ -52,18 +52,31 @@ public struct ContextualTopBarView: View {
 
                 // Universal Quick Actions for Selected Element (With Large Click Targets)
                 HStack(spacing: 4) {
-                    // Opacity Stepper
-                    HStack(spacing: 3) {
-                        Image(systemName: "circle.lefthalf.filled")
-                            .font(.system(size: 11))
-                            .foregroundColor(.secondary)
-                        Text("\(Int(element.opacity * 100))%")
-                            .font(.system(size: 11, design: .monospaced))
+                    // Opacity — click for presets
+                    Menu {
+                        ForEach([100, 90, 75, 50, 25, 10], id: \.self) { pct in
+                            Button("\(pct)%") {
+                                viewModel.saveHistoryState()
+                                viewModel.updateSelectedElement { $0.opacity = Double(pct) / 100.0 }
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "circle.lefthalf.filled")
+                                .font(.system(size: 11))
+                                .foregroundColor(.secondary)
+                            Text("\(Int((element.opacity * 100).rounded()))%")
+                                .font(PlumaTheme.numeric(11))
+                                .fixedSize()
+                        }
                     }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
                     .padding(.horizontal, 6)
-                    .padding(.vertical, 4)
-                    .background(Color.secondary.opacity(0.08))
-                    .clipShape(RoundedRectangle(cornerRadius: 5))
+                    .frame(height: 24)
+                    .background(RoundedRectangle(cornerRadius: 6).fill(PlumaTheme.control))
+                    .help("Transparency")
 
                     Divider().frame(height: 16)
 
@@ -102,11 +115,10 @@ public struct ContextualTopBarView: View {
                 canvasDefaultsControls
             }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 5)
-        .frame(height: 36)
-        .background(Color(NSColor.controlBackgroundColor))
-        .overlay(Divider(), alignment: .bottom)
+        .padding(.horizontal, 12)
+        .frame(height: 38)
+        .background(PlumaTheme.chrome)
+        .overlay(alignment: .bottom) { Rectangle().fill(PlumaTheme.hairline).frame(height: 1) }
     }
 
     // MARK: - Text Contextual Controls
@@ -274,7 +286,7 @@ public struct ContextualTopBarView: View {
         HStack(spacing: 8) {
             // Fill Color Picker (Custom Canva Popover)
             HStack(spacing: 4) {
-                Text("Fill").font(.system(size: 11, design: .serif)).foregroundColor(.secondary)
+                Text("Fill").font(.system(size: 11)).foregroundColor(.secondary)
                 CanvaColorButton(
                     color: Binding(
                         get: { shape.fill.solidColor },
@@ -317,7 +329,7 @@ public struct ContextualTopBarView: View {
 
             // Border Stroke Toggle & Width
             HStack(spacing: 4) {
-                Text("Border").font(.system(size: 11, design: .serif)).foregroundColor(.secondary)
+                Text("Border").font(.system(size: 11)).foregroundColor(.secondary)
                 Toggle("", isOn: Binding(
                     get: { shape.stroke.isEnabled },
                     set: { val in
@@ -434,7 +446,7 @@ public struct ContextualTopBarView: View {
                         .frame(width: 10, height: 10)
                         .overlay(Circle().stroke(Color.secondary.opacity(0.3), lineWidth: 0.8))
                     Text(codeContent.theme.rawValue)
-                        .font(.system(size: 11, weight: .medium, design: .serif))
+                        .font(.system(size: 11, weight: .medium))
                     Image(systemName: "chevron.up.chevron.down")
                         .font(.system(size: 8))
                         .foregroundColor(.secondary)
@@ -527,7 +539,7 @@ public struct ContextualTopBarView: View {
                     Image(systemName: "pencil.line")
                     Text("Edit Code")
                 }
-                .font(.system(size: 11, weight: .semibold, design: .serif))
+                .font(.system(size: 11, weight: .semibold))
                 .padding(.horizontal, 8)
                 .frame(height: 26)
                 .background(Color(hex: "#C2410C").opacity(0.15))
@@ -846,7 +858,7 @@ public struct ContextualTopBarView: View {
                     Image(systemName: icon.isMulticolor ? "paintpalette.fill" : "circle.fill")
                     Text(icon.isMulticolor ? "Multicolor" : "Monochrome")
                 }
-                .font(.system(size: 10.5, weight: .semibold, design: .serif))
+                .font(.system(size: 10.5, weight: .semibold))
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)
                 .background(icon.isMulticolor ? Color(hex: "#C2410C").opacity(0.15) : Color.secondary.opacity(0.08))
@@ -859,7 +871,7 @@ public struct ContextualTopBarView: View {
 
             Divider().frame(height: 16)
 
-            Text("Primary:").font(.system(size: 11, design: .serif)).foregroundColor(.secondary)
+            Text("Primary:").font(.system(size: 11)).foregroundColor(.secondary)
             CanvaColorButton(
                 color: Binding(
                     get: { icon.primaryColor },
@@ -876,7 +888,7 @@ public struct ContextualTopBarView: View {
             )
 
             if icon.isMulticolor {
-                Text("Secondary:").font(.system(size: 11, design: .serif)).foregroundColor(.secondary)
+                Text("Secondary:").font(.system(size: 11)).foregroundColor(.secondary)
                 CanvaColorButton(
                     color: Binding(
                         get: { icon.secondaryColor },
@@ -892,7 +904,7 @@ public struct ContextualTopBarView: View {
                     documentColors: extractDocumentColors()
                 )
 
-                Text("Tertiary:").font(.system(size: 11, design: .serif)).foregroundColor(.secondary)
+                Text("Tertiary:").font(.system(size: 11)).foregroundColor(.secondary)
                 CanvaColorButton(
                     color: Binding(
                         get: { icon.tertiaryColor },
@@ -916,34 +928,36 @@ public struct ContextualTopBarView: View {
     @ViewBuilder
     private func drawingContextualControls() -> some View {
         HStack(spacing: 8) {
-            Text("Inking Pen Active").font(.system(size: 11, weight: .bold, design: .serif)).foregroundColor(Color(hex: "#C2410C"))
+            Text("Inking Pen Active").font(.system(size: 11, weight: .bold)).foregroundColor(Color(hex: "#C2410C"))
         }
     }
 
     // MARK: - Canvas Defaults Controls (When nothing selected)
 
     private var canvasDefaultsControls: some View {
-        HStack(spacing: 12) {
-            // Sheet Dimensions
-            HStack(spacing: 4) {
-                Image(systemName: "doc.plaintext")
-                    .font(.system(size: 11))
-                    .foregroundColor(Color(hex: "#C2410C"))
-                Text("Sheet:")
-                    .font(.system(size: 11, design: .serif))
-                    .foregroundColor(.secondary)
-                Text("\(Int(viewModel.currentPage.width)) × \(Int(viewModel.currentPage.height)) px")
-                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+        HStack(spacing: 10) {
+            Text(viewModel.currentPage.name.isEmpty ? "Page \(viewModel.activePageIndex + 1)" : viewModel.currentPage.name)
+                .font(PlumaTheme.label(12, weight: .semibold))
+                .lineLimit(1)
+
+            Button(action: { viewModel.showPresetPickerModal = true }) {
+                HStack(spacing: 4) {
+                    Image(systemName: "aspectratio")
+                        .font(.system(size: 11))
+                    Text("Resize")
+                        .font(PlumaTheme.label(12))
+                }
+                .padding(.horizontal, 8)
+                .frame(height: 24)
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .hoverHighlight()
+            .help("Change page size (\(Int(viewModel.currentPage.width)) × \(Int(viewModel.currentPage.height)))")
 
-            Divider().frame(height: 16)
+            Rectangle().fill(PlumaTheme.hairline).frame(width: 1, height: 16)
 
-            // Sheet Background Color (White Default)
-            HStack(spacing: 4) {
-                Text("Canvas Color:")
-                    .font(.system(size: 11, design: .serif))
-                    .foregroundColor(.secondary)
-
+            HStack(spacing: 6) {
                 CanvaColorButton(
                     color: Binding(
                         get: { viewModel.currentPage.background.solidColor },
@@ -955,52 +969,28 @@ public struct ContextualTopBarView: View {
                     documentColors: extractDocumentColors(),
                     size: 20
                 )
-
-                Button(action: {
-                    viewModel.saveHistoryState()
-                    viewModel.currentPage.background = .solid(.white)
-                }) {
-                    Text("Pure White")
-                        .font(.system(size: 10, design: .serif))
-                        .padding(.horizontal, 6)
-                        .frame(height: 22)
-                        .background(Color.secondary.opacity(0.08))
-                        .clipShape(RoundedRectangle(cornerRadius: 3))
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            .hoverHighlight()
+                Text("Background")
+                    .font(PlumaTheme.label(12))
+                    .foregroundColor(.secondary)
             }
-
-            Divider().frame(height: 16)
-
-            // Smart Snapping & Grid Toggles
-            Toggle("Snapping Guides", isOn: $viewModel.enableSnapping)
-                .font(.system(size: 11, design: .serif))
-
-            Toggle("Millimeter Grid", isOn: $viewModel.showGridOverlay)
-                .font(.system(size: 11, design: .serif))
+            .help("Page background color")
 
             Spacer()
 
-            // Quick Add Page button
-            Button(action: {
-                viewModel.addPage()
-            }) {
-                HStack(spacing: 4) {
-                    Image(systemName: "plus")
-                    Text("Add Page")
-                }
-                .font(.system(size: 11, weight: .semibold, design: .serif))
-                .padding(.horizontal, 8)
-                .frame(height: 26)
-                .background(Color(hex: "#C2410C").opacity(0.12))
-                .foregroundColor(Color(hex: "#C2410C"))
-                .clipShape(RoundedRectangle(cornerRadius: 5))
-                .contentShape(Rectangle())
+            toggleButton(icon: "squareshape.split.2x2.dotted", isActive: viewModel.enableSnapping) {
+                viewModel.enableSnapping.toggle()
             }
-            .buttonStyle(.plain)
-            .hoverHighlight()
+            .help(viewModel.enableSnapping ? "Smart guides & snapping: on" : "Smart guides & snapping: off")
+
+            toggleButton(icon: "grid", isActive: viewModel.showGridOverlay) {
+                viewModel.showGridOverlay.toggle()
+            }
+            .help(viewModel.showGridOverlay ? "Hide grid" : "Show grid")
+
+            toggleButton(icon: "ruler", isActive: viewModel.showRulers) {
+                withAnimation(.easeInOut(duration: 0.15)) { viewModel.showRulers.toggle() }
+            }
+            .help("Rulers & guides (⌘R)")
         }
     }
 
@@ -1049,8 +1039,8 @@ public struct ContextualTopBarView: View {
             Image(systemName: icon)
                 .font(.system(size: 11, weight: isActive ? .bold : .regular))
                 .frame(width: 26, height: 26)
-                .background(isActive ? Color(hex: "#C2410C").opacity(0.2) : Color.clear)
-                .foregroundColor(isActive ? Color(hex: "#C2410C") : .primary)
+                .background(isActive ? PlumaTheme.accentSoft : Color.clear)
+                .foregroundColor(isActive ? PlumaTheme.accentOnSoft : .primary)
                 .clipShape(RoundedRectangle(cornerRadius: 4))
                 .contentShape(Rectangle())
         }
